@@ -1,0 +1,133 @@
+<main tabindex="-1" class="w-full h-full relative flex flex-col justify-center" style="outline: none; scrollbar-width: none; padding-bottom: 89px;">
+    <article class="my-2 mx-auto flex flex-col gap-4 flex-1 justify-center" style="max-width: 750px;">
+      <div class="relative flex flex-row gap-4 justify-center items-center">
+        <div class="flex items-center absolute top-0 -left-16 py-[100px] h-full">
+          <div class="max-h-[400px] h-full w-full"></div>
+        </div>
+        <div class="w-full mx-auto">
+          <div class="group relative mx-auto rounded-2xl overflow-hidden" style="width: 720px; height: 541px;">
+            <div class="grid">
+              <div class="col-start-1 row-start-1 w-full h-full" style="width: 720px; height: 541px;">
+                <div class="flex flex-col justify-center items-center col-start-1 row-start-1 w-full h-full bg-accent">
+                  <img alt="Loading" class="absolute top-0 left-0 w-full h-full object-cover blur-sm" src="https://assets.grok.com/users/b3a1001b-710b-49b4-bd3c-756d14b8d04f/289ef585-f045-418f-9176-9690a5c5cee2/content">
+                  <img alt="Loading" class="absolute top-0 left-0 w-full h-full object-cover blur-md" src="https://assets.grok.com/users/b3a1001b-710b-49b4-bd3c-756d14b8d04f/289ef585-f045-418f-9176-9690a5c5cee2/content">
+                  <div class="absolute top-0 left-0 w-full h-full" style="padding: 10px;">
+                    <canvas width="700" height="521" style="background: transparent; display: block; width: 700px; height: 521px;"></canvas>
+                  </div>
+                  <div class="absolute top-0 left-0 w-full h-full flex justify-center items-center">
+                    <div class="flex justify-center items-center gap-2 border border-border-l1 rounded-full px-3 h-10 transition-opacity bg-[#000]/40 backdrop-blur-[2px] opacity-100">
+                      <div class="flex justify-center items-center gap-2">
+                        <span class="text-white text-sm font-semibold animate-pulse">Generating</span>
+                        <span class="text-white text-sm font-semibold tabular-nums animate-pulse">34%</span>
+                      </div>
+                      <div class="w-[1px] h-4 bg-white/50"></div>
+                      <button data-slot="button" class="inline-flex items-center justify-center whitespace-nowrap text-sm font-medium leading-[normal] cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-60 disabled:cursor-not-allowed duration-100 [&amp;_svg]:shrink-0 select-none disabled:hover:bg-transparent border border-transparent gap-1.5 px-3 rounded-full hover:bg-transparent h-10 text-white/50 hover:text-white disabled:text-white/70 transition-colors" type="button">Cancel Video</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="absolute bottom-32 left-0 flex flex-col items-center w-full p-3 gap-3 pointer-events-none"></div>
+            <div class="absolute top-0 left-0 flex flex-row justify-end items-center w-full py-3 p-4 gap-2"></div>
+            <div class="absolute bottom-0 left-0 flex-row items-center w-full p-4 gap-3 justify-end hidden">
+              <div class="flex justify-between w-full items-center flex-row-reverse gap-1"></div>
+            </div>
+            <div class="absolute left-0 flex-row justify-between items-center w-full p-4 gap-3 bottom-[15px] hidden">
+              <div class="flex items-center gap-2 transition-opacity duration-300 opacity-0">
+                <button data-slot="button" class="inline-flex items-center justify-center gap-2 whitespace-nowrap text-sm leading-[normal] cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-60 disabled:cursor-not-allowed transition-colors duration-100 [&amp;_svg]:shrink-0 select-none border-border-l2 disabled:hover:bg-transparent rounded-full overflow-hidden h-10 w-10 p-2 bg-[#000]/40 backdrop-blur-[2px] text-white hover:bg-[#000]/80 border-0 font-semibold hover:text-white" type="button" aria-label="Pause">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="0" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-pause size-[20px]">
+                    <rect x="14" y="4" width="4" height="16" rx="1"></rect>
+                    <rect x="6" y="4" width="4" height="16" rx="1"></rect>
+                  </svg>
+                </button>
+              </div>
+              <div>
+                <button data-slot="button" class="inline-flex items-center justify-center gap-2 whitespace-nowrap text-sm leading-[normal] cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-60 disabled:cursor-not-allowed [&amp;_svg]:shrink-0 select-none border-border-l2 disabled:hover:bg-transparent rounded-full overflow-hidden h-10 w-10 p-2 bg-[#000]/40 backdrop-blur-[2px] text-white hover:bg-[#000]/80 border-0 font-semibold hover:text-white transition-opacity duration-300 opacity-0" type="button">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-volume2 size-[20px]">
+                    <path d="M11 4.702a.705.705 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.705.705 0 0 0 11 19.298z"></path>
+                    <path d="M16 9a5 5 0 0 1 0 6"></path>
+                    <path d="M19.364 18.364a9 9 0 0 0 0-12.728"></path>
+                  </svg>
+                  <span class="font-semibold text-md sr-only">Mute</span>
+                </button>
+              </div>
+            </div>
+            <div class="absolute bottom-0 left-0 flex-row justify-between items-center w-full p-2 py-0 gap-3 hidden">
+              <div class="flex flex-col justify-center items-center w-full h-8 px-2 relative">
+                <div class="w-full bg-[#000]/50 z-10 rounded-full overflow-hidden transition-all duration-300 cursor-pointer opacity-0 h-1">
+                  <div class="w-full h-full bg-[#fff]/90" style="width: 0%;"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="absolute top-0 w-fit py-[100px] group-hover:opacity-100 transition-opacity duration-300 flex items-center pointer-events-auto opacity-100" style="left: -75px; height: 541px;">
+            <div class="max-h-[420px] h-full w-full">
+              <div tabindex="0" class="snap-y snap-mandatory relative flex gap-2 items-center h-full flex-col overflow-y-auto overflow-x-hidden justify-center" style="width: 10px;">
+                <div class="scroll-gradient-sentinel" style="height: 1px; width: 100%; top: 0px; flex-shrink: 0;"></div>
+                <div class="scroll-gradient-sentinel" style="height: 1px; width: 100%; bottom: 0px; flex-shrink: 0;"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="flex flex-col justify-between items-center gap-2 absolute inset-y-0 -right-14">
+          <div class="flex-shrink-0">
+            <div class="flex gap-1 rounded-full bg-surface-l2 flex-col" aria-label="Media type selection">
+              <button data-slot="button" class="inline-flex items-center justify-center gap-2 whitespace-nowrap text-sm font-medium leading-[normal] cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-60 disabled:cursor-not-allowed transition-colors duration-100 [&amp;_svg]:shrink-0 select-none bg-button-filled text-fg-invert hover:bg-button-filled-hover disabled:hover:bg-button-filled rounded-full overflow-hidden h-10 w-10 p-2 border-0" type="button">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" class="stroke-[2] ">
+                  <path fill-rule="evenodd" clip-rule="evenodd" d="M12 4C14.4853 4 16.5 6.01472 16.5 8.5V15.5C16.5 17.9853 14.4853 20 12 20H6C3.51472 20 1.5 17.9853 1.5 15.5V8.5C1.5 6.01472 3.51472 4 6 4H12Z" fill="currentColor"></path>
+                  <path d="M22.5 19.0811L18.375 15.7812L18 15.4805V8.51953L18.375 8.21875L22.5 4.91895V19.0811Z" fill="currentColor"></path>
+                </svg>
+                <span class="sr-only">Video</span>
+              </button>
+              <button data-slot="button" class="inline-flex items-center justify-center gap-2 whitespace-nowrap text-sm font-medium leading-[normal] cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-60 disabled:cursor-not-allowed transition-colors duration-100 [&amp;_svg]:shrink-0 select-none border-border-l2 text-fg-primary hover:bg-button-ghost-hover disabled:hover:bg-transparent rounded-full overflow-hidden h-10 w-10 p-2 border-0" type="button">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" class="stroke-[2] ">
+                  <path fill-rule="evenodd" clip-rule="evenodd" d="M14.0996 2.5C15.2032 2.5 16.0914 2.49903 16.8086 2.55762C17.5373 2.61716 18.1773 2.74327 18.7695 3.04492C19.7103 3.52429 20.4757 4.28966 20.9551 5.23047C21.2567 5.82266 21.3828 6.4627 21.4424 7.19141C21.501 7.90857 21.5 8.79681 21.5 9.90039V14.0996C21.5 15.2032 21.501 16.0914 21.4424 16.8086C21.3828 17.5373 21.2567 18.1773 20.9551 18.7695C20.4757 19.7103 19.7103 20.4757 18.7695 20.9551C18.1773 21.2567 17.5373 21.3828 16.8086 21.4424C16.0914 21.501 15.2032 21.5 14.0996 21.5H9.90039C8.79681 21.5 7.90857 21.501 7.19141 21.4424C6.4627 21.3828 5.82266 21.2567 5.23047 20.9551C4.28966 20.4757 3.52429 19.7103 3.04492 18.7695C2.74327 18.1773 2.61716 17.5373 2.55762 16.8086C2.49903 16.0914 2.5 15.2032 2.5 14.0996V9.90039C2.5 8.79681 2.49903 7.90857 2.55762 7.19141C2.61716 6.4627 2.74327 5.82266 3.04492 5.23047C3.52429 4.28966 4.28966 3.52429 5.23047 3.04492C5.82266 2.74327 6.4627 2.61716 7.19141 2.55762C7.90857 2.49903 8.79681 2.5 9.90039 2.5H14.0996ZM4.50586 14.4424C4.51159 14.915 4.52312 16.3068 4.55078 16.6455C4.60023 17.2507 4.69296 17.599 4.82715 17.8623C5.11472 18.4265 5.57347 18.8853 6.1377 19.1729C6.40105 19.307 6.74933 19.3998 7.35449 19.4492C7.97129 19.4996 8.76396 19.5 9.90039 19.5H14.0996C14.4595 19.5 15.7848 19.4968 16.0811 19.4951L7.95899 11.373L4.50586 14.4424ZM15 7C13.8954 7 13 7.89543 13 9C13 10.1046 13.8954 11 15 11C16.1046 11 17 10.1046 17 9C17 7.89543 16.1046 7 15 7Z" fill="currentColor"></path>
+                </svg>
+                <span class="sr-only">Image</span>
+              </button>
+            </div>
+          </div>
+          <div class="flex flex-col gap-2">
+            <button class="inline-flex items-center justify-center gap-2 whitespace-nowrap text-sm font-medium leading-[normal] cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-60 disabled:cursor-not-allowed transition-colors duration-100 [&amp;_svg]:shrink-0 select-none hover:text-fg-primary disabled:hover:bg-transparent border border-transparent rounded-full overflow-hidden h-10 w-10 p-2 bg-surface-l2 text-primary hover:bg-surface-l3" type="button" aria-label="Unsave" data-state="closed">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg" class="stroke-[2] size-4 text-red-400 dark:text-red-500" stroke="none">
+                <path d="M12.0014 6.339C17.9734 -0.991518 30.0007 10.3 12.0015 21C-6.00236 10.3 6.02624 -0.991426 12.0014 6.339Z" stroke="currentColor"></path>
+              </svg>
+            </button>
+            <button class="inline-flex items-center justify-center gap-2 whitespace-nowrap text-sm font-medium leading-[normal] cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-60 disabled:cursor-not-allowed transition-colors duration-100 [&amp;_svg]:shrink-0 select-none hover:text-fg-primary disabled:hover:bg-transparent border border-transparent rounded-full overflow-hidden h-10 w-10 p-2 bg-surface-l2 text-primary hover:bg-surface-l3" type="button" aria-label="Compose Post" data-state="closed">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" class="size-4">
+                <path d="M18.244 2.25H21.552L14.325 10.51L22.827 21.75H16.17L10.956 14.933L4.99 21.75H1.68L9.41 12.915L1.254 2.25H8.08L12.793 8.481L18.244 2.25ZM17.083 19.77H18.916L7.084 4.126H5.117L17.083 19.77Z" fill="currentColor"></path>
+              </svg>
+            </button>
+            <button class="inline-flex items-center justify-center gap-2 whitespace-nowrap text-sm font-medium leading-[normal] cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-60 disabled:cursor-not-allowed transition-colors duration-100 [&amp;_svg]:shrink-0 select-none hover:text-fg-primary disabled:hover:bg-transparent border border-transparent rounded-full overflow-hidden h-10 w-10 p-2 bg-surface-l2 text-primary hover:bg-surface-l3" type="button" aria-label="Edit image" data-state="closed">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" class="stroke-[2] size-4">
+                <path fill-rule="evenodd" clip-rule="evenodd" d="M17.5692 12.3085C18.7566 11.1842 20.6229 11.2098 21.7792 12.3661C22.9579 13.5451 22.958 15.4558 21.7792 16.6347L17.5038 20.911C16.6599 21.7548 15.5413 22.2697 14.3515 22.3612L11.413 22.5868L11.6347 19.7108C11.7298 18.4743 12.2812 17.3166 13.1815 16.4638L17.5692 12.3085ZM20.3651 13.7802C19.9749 13.3899 19.345 13.3812 18.9442 13.7606L14.5565 17.9159C14.0164 18.4276 13.6859 19.1223 13.6288 19.8642L13.5858 20.413L14.1981 20.3671C14.9119 20.3121 15.5825 20.0031 16.0888 19.497L20.3651 15.2206C20.7629 14.8228 20.7628 14.1781 20.3651 13.7802Z" fill="currentColor"></path>
+                <path d="M14.9999 2.49991C16.3224 2.49991 17.2057 2.48874 17.9511 2.71475C19.549 3.19949 20.8003 4.45078 21.2851 6.04874C21.5111 6.79417 21.4999 7.67736 21.4999 8.99991H19.4999C19.4999 7.53166 19.4893 7.01887 19.371 6.62881C19.0801 5.67018 18.3297 4.91967 17.371 4.62881C16.981 4.51052 16.4681 4.49991 14.9999 4.49991H9.9003C8.76391 4.49991 7.97118 4.50031 7.3544 4.55069C6.74928 4.60013 6.40095 4.69288 6.1376 4.82706C5.57341 5.11462 5.11462 5.57341 4.82706 6.1376C4.69288 6.40095 4.60013 6.74928 4.55069 7.3544C4.50031 7.97118 4.49991 8.76391 4.49991 9.9003V12.7733L8.03995 9.62588L12.2069 13.7929L10.7929 15.2069L7.95889 12.373L4.50088 15.4462C4.50396 16.5783 4.52338 17.0234 4.62881 17.371C4.91967 18.3297 5.67018 19.0801 6.62881 19.371C7.01887 19.4893 7.53166 19.4999 8.99991 19.4999V21.4999C7.67736 21.4999 6.79417 21.5111 6.04874 21.2851C4.45078 20.8003 3.19949 19.549 2.71475 17.9511C2.48874 17.2057 2.49991 16.3224 2.49991 14.9999V9.9003C2.49991 8.79676 2.49893 7.90846 2.55752 7.19131C2.61706 6.46264 2.74318 5.82255 3.04483 5.23038C3.52419 4.28959 4.28959 3.52419 5.23038 3.04483C5.82255 2.74318 6.46264 2.61706 7.19131 2.55752C7.90846 2.49893 8.79676 2.49991 9.9003 2.49991H14.9999Z" fill="currentColor"></path>
+                <path d="M14.9999 6.99991C16.1044 6.99991 16.9999 7.89538 16.9999 8.99991C16.9999 10.1045 16.1045 10.9999 14.9999 10.9999C13.8954 10.9999 12.9999 10.1044 12.9999 8.99991C13 7.89541 13.8954 6.99996 14.9999 6.99991Z" fill="currentColor"></path>
+              </svg>
+            </button>
+            <button class="inline-flex items-center justify-center gap-2 whitespace-nowrap text-sm font-medium leading-[normal] cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-60 disabled:cursor-not-allowed transition-colors duration-100 [&amp;_svg]:shrink-0 select-none hover:text-fg-primary disabled:hover:bg-transparent border border-transparent rounded-full overflow-hidden h-10 w-10 p-2 bg-surface-l2 text-primary hover:bg-surface-l3" type="button" aria-label="Download" data-state="closed">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" class="stroke-[2] size-4">
+                <path stroke="currentColor" d="M11.996 3v12m0 0-5-5m5 5 5-5M4 15v1a4 4 0 0 0 4 4h8a4 4 0 0 0 4-4v-1"></path>
+              </svg>
+            </button>
+            <button class="inline-flex items-center justify-center gap-2 whitespace-nowrap text-sm font-medium leading-[normal] cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-60 disabled:cursor-not-allowed transition-colors duration-100 [&amp;_svg]:shrink-0 select-none hover:text-fg-primary disabled:hover:bg-transparent border border-transparent rounded-full overflow-hidden h-10 w-10 p-2 bg-surface-l2 text-primary hover:bg-surface-l3" type="button" aria-label="Create share link" data-state="closed">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" class="stroke-[2] size-4">
+                <path d="M6.99609 9L11.9961 4L16.9961 9M6.99609 9M12 16V4" stroke="currentColor"></path>
+                <path d="M4 15V16C4 18.2091 5.79086 20 8 20H16C18.2091 20 20 18.2091 20 16V15" stroke="currentColor"></path>
+              </svg>
+            </button>
+            <!-- more options button -->
+            <button data-slot="button" class="inline-flex items-center justify-center gap-2 whitespace-nowrap text-sm font-medium leading-[normal] cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-60 disabled:cursor-not-allowed transition-colors duration-100 [&amp;_svg]:shrink-0 select-none hover:text-fg-primary disabled:hover:bg-transparent border border-transparent rounded-full overflow-hidden h-10 w-10 p-2 bg-surface-l2 text-primary hover:bg-surface-l3" type="button" aria-label="More options" id="radix-_r_5e_" aria-haspopup="menu" aria-expanded="false" data-state="closed">
+              <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-ellipsis size-4">
+                <circle cx="12" cy="12" r="1"></circle>
+                <circle cx="19" cy="12" r="1"></circle>
+                <circle cx="5" cy="12" r="1"></circle>
+              </svg>
+            </button>
+            <!-- more options button -->
+          </div>
+        </div>
+      </div>
+      <hr id="imagine-post-page-content" class="h-0 p-0 -my-2 invisible">
+    </article>
+  </main>

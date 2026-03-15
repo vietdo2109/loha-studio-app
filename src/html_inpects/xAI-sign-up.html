@@ -1,0 +1,88 @@
+signUpWithEmailBtn:
+<button type="button"> // removed tailwin classes
+  <span class="absolute left-1/2 top-1/2 size-[max(100%,2.75rem)] -translate-x-1/2 -translate-y-1/2 [@media(pointer:fine)]:hidden" aria-hidden="true"></span>
+  <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-mail size-4">
+    <rect width="20" height="16" x="2" y="4" rx="2"></rect>
+    <path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"></path>
+  </svg>Sign up with email </button>
+
+emailInput:
+<input data-testid="email" autocomplete="email" type="email" name="email">
+
+emailNextBtn:
+<button type="submit" >
+  <span class="absolute left-1/2 top-1/2 size-[max(100%,2.75rem)] -translate-x-1/2 -translate-y-1/2 [@media(pointer:fine)]:hidden" aria-hidden="true"></span>Sign up </button>
+
+codeInput:
+<input autocomplete="one-time-code" class="disabled:cursor-not-allowed" data-input-otp="true" data-input-otp-placeholder-shown="true" inputmode="text" pattern="^[a-zA-Z0-9]+$" maxlength="6" value="" name="code" data-input-otp-mss="0" data-input-otp-mse="0" >
+
+complete form:
+<div class="mx-auto flex w-full flex-col gap-6 max-w-sm">
+  <div class="mb-10">
+    <h1 class="tracking-tight text-2xl sm:text-3xl mb-4 text-center">Complete your sign up</h1>
+    <div class="flex justify-center">
+      <div class="flex items-center gap-2 rounded-full border bg-surface-l1 px-3 py-1.5 text-sm font-medium">
+        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-mail text-subtle size-4 opacity-75">
+          <rect width="20" height="16" x="2" y="4" rx="2"></rect>
+          <path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"></path>
+        </svg>
+        <span>powedo7291@hutudns.com</span>
+      </div>
+    </div>
+  </div>
+  <form>
+    <input autocomplete="off" class="hidden" readonly="" type="email" value="powedo7291@hutudns.com" name="email">
+    <div class="space-y-4">
+      <div class="space-y-1">
+        <div class="grid gap-1 sm:grid-cols-2 sm:gap-4">
+          <div class="flex flex-col gap-1">
+            <label >First name</label>
+            <div class="relative">
+              <input data-testid="givenName" autocomplete="given-name" type="text" name="givenName">
+            </div>
+            <p class="text-xs text-destructive min-h-5"></p>
+          </div>
+          <div class="flex flex-col gap-1">
+            <label >Last name</label>
+            <div class="relative">
+              <input  data-testid="familyName" autocomplete="family-name" type="text" name="familyName">
+            </div>
+            <p class="text-xs text-destructive min-h-5"></p>
+          </div>
+        </div>
+        <div class="flex flex-col gap-1">
+          <label class="text-sm leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70 mb-1.5 font-normal">Password</label>
+          <div class="relative">
+            <input data-testid="password" autocomplete="off" type="password" name="password">
+            <div>
+              <div class="flex-shrink-0 overflow-visible size-4">
+                <svg viewBox="0 0 24 24" class="h-full w-full -rotate-90 transform overflow-visible">
+                  <circle class="stroke-[4px] stroke-primary/20" cx="12" cy="12" r="11" fill="none"></circle>
+                  <circle class="stroke-current stroke-[4px] text-primary" cx="12" cy="12" r="11" fill="none" stroke-dasharray="69.11503837897544" stroke-linecap="round" stroke-dashoffset="69.11503837897544"></circle>
+                </svg>
+              </div>
+              <button type="button" class="flex" tabindex="-1">
+                <span class="inline-flex items-center justify-center p-0 m-0" data-namespace="@xai/icons" data-slot="icon" style="height: 16px; width: 16px;">
+                  <svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true" class="" focusable="false" style="fill: currentcolor; height: 16px; width: 16px;">
+                  </svg>
+                </span>
+              </button>
+            </div>
+          </div>
+          <p class="text-xs text-destructive min-h-5"></p>
+        </div>
+      </div>
+      <div style="height: 64px; transform: none;">
+        <div>
+          <input type="hidden" name="cf-turnstile-response" id="cf-chl-widget-lif0e_response" value="0.V52lg0VWHdYlpxZg3xwFa--He_loCSPu6nw9sBb_z2fwm1V-2eIJNCRWZd99n3CJQ_61111piOO8yGPNl8D0y4UQvYd4LBewqRn7Rf0Py4udDp9MBWW_f7qxNT5-8E_URF6L43ytqNrt5ItN-rpWOqUvkz28m4_byRhRsP0IyxbBOCN4BwrM6vaVFervsS2G664tuABwuOAS-YNzNNkmDXh4Qf4V0XlzJth7usbvsEQocQMsBkPrDGS2ZTNR0pU1eER0Iu4DfF4Y3qaCmi2oS1MeA_tc5AIFPte0BxzJUIW8PlxxsC_IwyvGbZRMprCzFf-MELs5lPWMdZfsgdtDXF8o9ES3lN5Ml3m65Sz1Iz78rWwMTYYm0oM3X1nzN6XV8WgewjlyVPGi9jY2oR1egcfuiXUwBbfuI1D3tU6YUHvAILXPIYpSiTrlUHZOtRdQ_zLOelYdQYiQlNvDUYQ3dq1Qd4Dn4xrPexIWFlUEQlEVyUH1fN721n6qAWwOe6uCBSHk6QiLiaHw6iBumXeLAv0ECamQhcn3O5wCT2yTPgP3dsR_u7htScEWvczEf_ybDFh3AvsCFyj80gbkGjOGQbUZ2Tlnhw2uaK9SgEgFjBYMkHZxmIejvdvmBKrgVaDJ3gfhOokn18Fjc4tLJ3J-6KkoKOJUOwEkb15f5L6GG9nDYgmR0dHMLNuWipSe9_IlEZtiuKncZADej90S9U7Jsx6xhH6kPWv4WM5AB0dZZ6B5KVWkcrn09791cRvrJ3Wse_PU_eZKXLSssbPnzqOFcMwNoiYCcukxFkXconz1m3MpAlq0Lp1unI9s4aOFcVxAhPm9hwqpBHYjdG9TcQuuB4NLYwZdMm2aUVYl4DlXHqoMVS530T20-2iPcUZOgPq2YgzQqp3SttfMnxjvIG2r61LCvWDldeBLckvZ17CFkGU.KRHhfJYCiYC5hYCFHHc4XA.ba37b898296f1dcec35bccea6a31556c3a8e47398bb10fb6ccbd3c11c325c7a0">
+        </div>
+      </div>
+      <div class="space-y-3">
+        <button type="submit" >
+          <span class="absolute left-1/2 top-1/2 size-[max(100%,2.75rem)] -translate-x-1/2 -translate-y-1/2 [@media(pointer:fine)]:hidden" aria-hidden="true"></span>Complete sign up </button>
+        <button type="button" >
+          <span class="absolute left-1/2 top-1/2 size-[max(100%,2.75rem)] -translate-x-1/2 -translate-y-1/2 [@media(pointer:fine)]:hidden" aria-hidden="true"></span>Go back </button>
+      </div>
+    </div>
+  </form>
+</div>

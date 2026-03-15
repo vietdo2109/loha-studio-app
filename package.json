@@ -1,0 +1,40 @@
+{
+  "name": "video-automation-tool",
+  "version": "0.1.0",
+  "description": "Grok AI video automation tool",
+  "main": "out/main/main.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build && electron-builder --config electron-builder.config.js",
+    "build:unpacked": "electron-vite build && electron-builder --config electron-builder.config.js --dir",
+    "license-server:dev": "npm --prefix license-server run dev",
+    "license-server:build": "npm --prefix license-server run build",
+    "preview": "electron-vite preview",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "better-sqlite3": "^12.6.2",
+    "electron-store": "^11.0.2",
+    "electron-updater": "^6.8.3",
+    "node-machine-id": "^1.1.12",
+    "patchright": "^1.57.0",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "uuid": "^13.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.3.3",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^5.1.4",
+    "electron": "^40.6.1",
+    "electron-builder": "^26.8.1",
+    "electron-vite": "^5.0.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.3",
+    "vite": "^7.3.1"
+  }
+}

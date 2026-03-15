@@ -1,0 +1,49 @@
+<form class="space-y-4">
+    <h1 class="tracking-tight text-2xl sm:text-3xl mb-10 text-center">Log in with your email</h1>
+    <div class="space-y-2 [&amp;_label]:!text-primary">
+      <div class="flex flex-col gap-1">
+        <label class="text-sm leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70 text-content-error mb-1.5 font-normal">Email</label>
+        <div class="relative">
+          <input class="flex w-full border transition-colors file:border-0 file:bg-transparent file:text-xs file:font-medium focus-visible:ring-ring focus-visible:outline-none focus-visible:ring-1 disabled:opacity-50 h-10 px-3 py-2 sm:text-sm border-[--input-border] bg-[--input-bg] text-[--input-text] w-full focus-visible:ring-destructive [--input-border:hsl(var(--destructive))]" data-testid="email" autocomplete="email" type="email" name="email" readonly="">
+        </div>
+        <p class="text-xs text-destructive min-h-5"></p>
+      </div>
+      <div class="flex flex-col gap-1">
+        <label class="text-sm leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70 text-content-error mb-1.5 font-normal">
+          <div class="flex items-center justify-between">
+            <span>Password</span>
+            <div style="transform: none;">
+              <a tabindex="-1" href="/reset-password?email=jfv2hezqnjjk%40dollicons.com">
+                <p class="text-xs text-muted hover:underline">Forgot your password?</p>
+              </a>
+            </div>
+          </div>
+        </label>
+        <div class="relative">
+          <input class="flex w-full border transition-colors file:border-0 file:bg-transparent file:text-xs file:font-medium focus-visible:ring-ring focus-visible:outline-none focus-visible:ring-1 disabled:opacity-50 h-10 px-3 py-2 sm:text-sm border-[--input-border] bg-[--input-bg] text-[--input-text] pr-10 w-full focus-visible:ring-destructive [--input-border:hsl(var(--destructive))]" autocomplete="off" type="password" name="password">
+          <div class="pointer text-content-subtle absolute right-2 top-0 flex h-10 w-fit cursor-pointer items-center justify-center gap-3">
+            <button type="button" class="flex" tabindex="-1">
+              <span class="inline-flex items-center justify-center p-0 m-0" data-namespace="@xai/icons" data-slot="icon" style="height: 16px; width: 16px;">
+                <svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true" class="" focusable="false" style="fill: currentcolor; height: 16px; width: 16px;">
+                  <path d="M17.883 19.297A10.95 10.95 0 0 1 12 21c-5.392 0-9.878-3.88-10.818-9A11 11 0 0 1 4.52 5.935L1.394 2.808l1.414-1.414 19.799 19.798-1.414 1.415zM5.936 7.35A8.97 8.97 0 0 0 3.223 12a9.005 9.005 0 0 0 13.201 5.838l-2.028-2.028A4.5 4.5 0 0 1 8.19 9.604zm6.978 6.978-3.242-3.241a2.5 2.5 0 0 0 3.241 3.241m7.893 2.265-1.431-1.431A8.9 8.9 0 0 0 20.778 12 9.005 9.005 0 0 0 9.552 5.338L7.974 3.76C9.221 3.27 10.58 3 12 3c5.392 0 9.878 3.88 10.819 9a10.95 10.95 0 0 1-2.012 4.593m-9.084-9.084Q11.86 7.5 12 7.5a4.5 4.5 0 0 1 4.492 4.778z"></path>
+                </svg>
+              </span>
+            </button>
+          </div>
+        </div>
+        <p class="text-xs text-destructive min-h-5"></p>
+      </div>
+      <p class="text-xs text-destructive !-mt-5 min-h-5">Wrong email address or password.</p>
+    </div>
+    <div style="height: 64px; transform: none;">
+      <div>
+        <input type="hidden" name="cf-turnstile-response" id="cf-chl-widget-gkzdh_response" value="0.IYeZli9LSx1y42jFblotOTBTwf_jtwqoKG2hbFyEgX3ev2iE3jQWeJuANsvajCl62N_JRsTwJZ6vGgbzQ9pS4l9jbuuXj1vHDgMMPVx_hkLYB44f5BPr8esOwYdNbuzgz2ksnlHb-4EixCXrteVyuQQRXO9hhDi5lX760VQyNDQ1dlPutTzp9ar6ECmNgaCmsf595tAkvw1wv11zgCPlAnQXbbRyZm9O_2liGlgw_MgGc8gujWm0vmA5fU4u9Owrc3Cec1HBH9QKBePpLll4Llih_btIowRns841mN8zcw6zOfuc8eWc_TLFbFPlfiKkhlgOMgE4bqqNs3Q46F-L7srlhQD2_greMR5xSUR6ib9vaAsagx2Mfp6yn7RIIOxwjN_5FhXqxYsTpG1_MKTlENMFwqtgQZ87OeMRjeHBGMwJI3gdvdIDX7ZujWvqUfhZAp-JkrC2b3z1bNL1MHS3c5pOYYrp_lgZw3bRwYPVbmY0xnlKx4o269s5cfLrp5KPHJiV7RJEsoMxI8QDZ8BhXPmr0QiKAxr8LGMAYDTr8IWDobchloYrO2oqUx_wSqrtWFzRG-2GGRkNuCMsYJXnnhQnOrLtcMlZ-LXXZxYI4Hrc4JiTcor65naSdTvqJ_pW-pIK_ZM63y4XSuCAzvSj_ubd5UKXMgVByBlIjoLA9ZukFTcCfXX77HYP1j0RQ2qnbpzujo-5bUybjCW0aW6_5gSjY53_GcwVRQLxF1Uiyyxwec_yK9s5mJOP9iNUtdVHPJkUuqc9oaTXJW06oBnPuw39qy1rwhRcU83rTf3h2rsroWufBRZcm63yAjRrijpoc1RnN-1pCk8wBUCpcfoOaQE-QU9sVt3ujcqZVXxv4D0-ZeJJAzzIc6A2JTJnt2P50SvXSA71SnZHWk6ONODuHZ_xFo8w3l1GWJrJJgQqDZ6A2clLu0IhpXrErHyP0Yl5.bDDDnEYtPmh3TIBzbcy3Fw.085636547ade43903ccb27029e23435affdad117f370e794a1a925bb90e4626b">
+      </div>
+    </div>
+    <div class="space-y-3">
+      <button type="submit" class="relative isolate inline-flex shrink-0 items-center justify-center rounded-full border text-base focus:outline focus:outline-2 focus:outline-offset-2 data-[disabled]:opacity-75 [&amp;&gt;[data-slot=icon]]:-mx-0.5 [&amp;&gt;[data-slot=icon]]:shrink-0 min-h-10 gap-x-3 px-4 py-2 sm:text-sm [&amp;&gt;[data-slot=icon]]:size-5 [&amp;&gt;[data-slot=icon]]:sm:size-4 border-[--btn-border] bg-[--btn-bg] text-[--btn-text] hover:border-[--btn-hover] hover:bg-[--btn-hover] focus:outline-[--btn-bg] [--btn-bg:hsl(var(--primary))] [--btn-border:hsl(var(--primary))] [--btn-hover:hsl(var(--primary-hover))] [--btn-text:hsl(var(--bg-l1))] w-full">
+        <span class="absolute left-1/2 top-1/2 size-[max(100%,2.75rem)] -translate-x-1/2 -translate-y-1/2 [@media(pointer:fine)]:hidden" aria-hidden="true"></span>Login </button>
+      <button type="button" class="relative isolate inline-flex shrink-0 items-center justify-center rounded-full border text-base focus:outline focus:outline-2 focus:outline-offset-2 data-[disabled]:opacity-75 [&amp;&gt;[data-slot=icon]]:-mx-0.5 [&amp;&gt;[data-slot=icon]]:shrink-0 min-h-10 gap-x-3 px-4 py-2 sm:text-sm [&amp;&gt;[data-slot=icon]]:size-5 [&amp;&gt;[data-slot=icon]]:sm:size-4 border-[--btn-border] bg-[--btn-bg] text-[--btn-text] hover:bg-[--btn-hover] focus:outline-[--btn-text] [--btn-bg:transparent] [--btn-border:hsl(var(--primary)/15%)] [--btn-hover:hsl(var(--bg-overlay-hover))] [--btn-text:hsl(var(--primary))] w-full">
+        <span class="absolute left-1/2 top-1/2 size-[max(100%,2.75rem)] -translate-x-1/2 -translate-y-1/2 [@media(pointer:fine)]:hidden" aria-hidden="true"></span>Go back </button>
+    </div>
+  </form>
