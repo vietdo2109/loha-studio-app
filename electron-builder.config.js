@@ -16,7 +16,7 @@ const disableWinSignAndEdit = process.env.WIN_SIGN_AND_EDIT === '0'
 const publish = genericPublishUrl
   ? [{ provider: 'generic', url: genericPublishUrl }]
   : (githubOwner && githubRepo
-      ? [{ provider: 'github', owner: githubOwner, repo: githubRepo, private: false }]
+      ? [{ provider: 'github', owner: githubOwner, repo: githubRepo, private: false, draft: false }]
       : undefined)
 
 /** @type {import('electron-builder').Configuration} */
