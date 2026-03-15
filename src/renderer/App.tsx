@@ -587,6 +587,9 @@ export default function App() {
               Khách hàng cần nhập activation key hợp lệ để sử dụng tool.
               Ứng dụng sẽ gọi license API để xác thực key, ràng buộc thiết bị và thời hạn.
             </div>
+            <div style={{ fontSize: 13, color: "var(--text2)", lineHeight: 1.5 }}>
+              Liên hệ mua tool: <b>039.969.2275</b>
+            </div>
             <input
               value={activationKey}
               onChange={(e) => setActivationKey(e.target.value)}
@@ -643,7 +646,7 @@ export default function App() {
           <span style={{ fontWeight: 700, fontSize: 13, letterSpacing: "-.01em" }}>Loha Studio</span>
           <div style={{ width: 1, height: 14, background: "var(--border)", margin: "0 4px" }}/>
           <div style={{ display: "flex", gap: 2, WebkitAppRegion: "no-drag" } as any}>
-            {(["Veo3", "Grok", "Sora"] as Platform[]).map(p => (
+            {(["Veo3", "Grok"] as Platform[]).map(p => (
               <button key={p} onClick={() => setPlatform(p)} style={{
                 padding: "3px 12px", borderRadius: 6, fontSize: 12, fontWeight: 500,
                 background: platform === p ? "var(--bg2)" : "transparent",
@@ -682,6 +685,18 @@ export default function App() {
               }}
             >
               <Icon.Projects/> Dự án
+            </button>
+            <button
+              onClick={() => setActivePanel("guide")}
+              style={{
+                display: "flex", alignItems: "center", gap: 5,
+                padding: "3px 10px", borderRadius: 6, fontSize: 12, fontWeight: 500,
+                background: activePanel === "guide" ? "var(--bg2)" : "transparent",
+                color: activePanel === "guide" ? "var(--text)" : "var(--text3)",
+                transition: "all .12s",
+              }}
+            >
+              <Icon.Info /> Hướng dẫn sử dụng
             </button>
             {platform === "Grok" && (
               <button
@@ -899,6 +914,66 @@ export default function App() {
               <AccountsPanel accounts={accounts} credFile={credFile} onLoadCred={handleLoadCred}/>
             </div>
           )}
+          {activePanel === "guide" && (
+            <div style={{ flex: 1, overflowY: "auto", padding: 16, display: "grid", gap: 14 }}>
+              <div style={{ border: "1px solid var(--border)", borderRadius: 10, background: "var(--surface)", padding: 14 }}>
+                <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 8 }}>Hướng dẫn sử dụng nhanh</div>
+                <div style={{ fontSize: 13, color: "var(--text2)", lineHeight: 1.6 }}>
+                  Tài liệu này giúp bạn tạo video đúng quy trình, tránh lỗi nhập ảnh/prompt và hiểu rõ cách chạy theo chế độ kịch bản hoặc prompt thủ công.
+                </div>
+              </div>
+              <div style={{ border: "1px solid var(--border)", borderRadius: 10, background: "var(--surface)", padding: 14 }}>
+                <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 6 }}>1) Kích hoạt ứng dụng</div>
+                <div style={{ fontSize: 13, color: "var(--text2)", lineHeight: 1.6 }}>
+                  Mở app, nhập activation key được cấp từ admin, nhấn <b>Kích hoạt</b>. Nếu key hợp lệ và chưa hết hạn, app sẽ mở đầy đủ chức năng.
+                </div>
+              </div>
+              <div style={{ border: "1px solid var(--border)", borderRadius: 10, background: "var(--surface)", padding: 14 }}>
+                <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 6 }}>2) Tạo video Veo3 (chi tiết)</div>
+                <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13, color: "var(--text2)", lineHeight: 1.6 }}>
+                  <li>Vào tab <b>Veo3</b>, tạo dự án mới và chọn <b>Thư mục tải về</b>.</li>
+                  <li><b>Import ảnh:</b> chọn <b>Thư mục ảnh đầu</b>. Ảnh được dùng theo thứ tự trong thư mục.</li>
+                  <li><b>Chế độ prompt:</b> tắt chế độ kịch bản, nhập prompt trực tiếp vào ô Prompts. (Lưu ý: Ảnh cần được đặt tên theo số thứ tự: 1.png, 2.png, ... khi dùng chế độ prompt)</li>
+                  <li><b>Chế độ kịch bản:</b> bật chế độ kịch bản, chọn 1 script; mỗi ảnh sẽ chạy qua toàn bộ prompt trong script đó.</li>
+                  <li>Đẩy dự án sang queue, mở <b>Veo3 Profiles</b>, đăng nhập profile rồi nhấn <b>Start</b>.</li>
+                </ul>
+              </div>
+              <div style={{ border: "1px solid var(--border)", borderRadius: 10, background: "var(--surface)", padding: 14 }}>
+                <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 6 }}>3) Quy ước nhập prompts</div>
+                <div style={{ fontSize: 13, color: "var(--text2)", lineHeight: 1.6, marginBottom: 6 }}>
+                  Mỗi prompt phải cách nhau <b>1 dòng trắng</b> (blank line). App sẽ tách prompts theo quy ước này.
+                </div>
+                <div style={{ fontSize: 12, color: "var(--text2)", background: "var(--bg2)", borderRadius: 8, padding: 10, fontFamily: "var(--mono)", whiteSpace: "pre-wrap" }}>
+                  Prompt 1: A cinematic close-up of a woman in red dress...
+                  {"\n\n"}
+                  Prompt 2: Slow camera pan, soft backlight, realistic skin...
+                  {"\n\n"}
+                  Prompt 3: Wide shot, city lights at night, dramatic mood...
+                </div>
+              </div>
+              <div style={{ border: "1px solid var(--border)", borderRadius: 10, background: "var(--surface)", padding: 14 }}>
+                <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 6 }}>4) Cập nhật phiên bản</div>
+                <div style={{ fontSize: 13, color: "var(--text2)", lineHeight: 1.6 }}>
+                  Nhấn <b>Check update</b>. Khi thấy thông báo đã tải xong, nhấn <b>Restart to update</b> để cập nhật.
+                </div>
+              </div>
+              <div style={{ border: "1px solid var(--border)", borderRadius: 10, background: "var(--surface)", padding: 14 }}>
+                <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 6 }}>Lưu ý quan trọng</div>
+                <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13, color: "var(--text2)", lineHeight: 1.6 }}>
+                  <li>Tên file ảnh và tên dự án nên đặt <b>không dấu</b> để giảm rủi ro lỗi trong quá trình chạy tự động.</li>
+                  <li>Không thu nhỏ/tắt màn hình khi automation đang chạy.</li>
+                  <li>Giữ mạng ổn định khi kích hoạt key và kiểm tra update.</li>
+                  <li>Nếu gặp lỗi import ảnh, prompt, hoặc lỗi bất kỳ, vui lòng liên hệ để được hỗ trợ nhanh.</li>
+                </ul>
+              </div>
+              <div style={{ border: "1px solid var(--border)", borderRadius: 10, background: "var(--surface)", padding: 14 }}>
+                <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 6 }}>Thông tin liên hệ</div>
+                <div style={{ fontSize: 13, color: "var(--text2)", lineHeight: 1.7 }}>
+                  Mua tool / hỗ trợ kỹ thuật: <b>039.969.2275</b>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
 
         <ErrorPanel errors={errors} expanded={errExpanded} onToggle={() => setErrExpanded(e => !e)}/>
@@ -909,7 +984,7 @@ export default function App() {
           borderTop: "1px solid var(--border)", flexShrink: 0,
         }}>
           <div style={{ fontSize: 12, color: "var(--text3)" }}>
-            {platform === "Veo3" ? (
+            {activePanel === "guide" ? "Đang xem hướng dẫn sử dụng" : platform === "Veo3" ? (
               veo3Queue.length > 0 ? (
                 hasPendingJobs
                   ? `${veo3Queue.reduce((s, q) => s + q.jobs.filter(j => j.status !== "done").length, 0)} job đang chờ · ${veo3Queue.reduce((s, q) => s + q.jobs.length, 0)} tổng · ${veo3Queue.length} dự án Veo3`
@@ -930,20 +1005,23 @@ export default function App() {
               {activationStatus.expiresAt ? ` · hết hạn ${new Date(activationStatus.expiresAt).toLocaleString()}` : ''}
             </span>
             {updateStatus && (
-              <span style={{ marginLeft: 8 }}>· {updateStatus}</span>
+              <span
+                style={{
+                  marginLeft: 8,
+                  display: 'inline-block',
+                  maxWidth: 380,
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                  verticalAlign: 'bottom',
+                }}
+                title={updateStatus}
+              >
+                · {updateStatus}
+              </span>
             )}
           </div>
           <div style={{ flex: 1 }}/>
-          {(window as any).electronAPI?.openLogFolder && (
-            <button
-              type="button"
-              onClick={() => (window as any).electronAPI.openLogFolder()}
-              style={{ fontSize: 11, color: "var(--text3)", textDecoration: "none", background: "none", padding: "2px 6px" }}
-              title="Mở thư mục chứa file log (gửi cho dev khi báo lỗi)"
-            >
-              Mở thư mục log
-            </button>
-          )}
           {(window as any).electronAPI?.checkForUpdatesNow && (
             <button
               type="button"
@@ -975,12 +1053,12 @@ export default function App() {
               {readyCount}/{accounts.length} tài khoản sẵn sàng
             </span>
           )}
-          {platform === "Veo3" && (
+          {platform === "Veo3" && activePanel === "projects" && (
             <span style={{ fontSize: 12, color: "var(--text3)" }}>
               Veo3: {veo3ProfilesList.length} profiles ({veo3ProfilesList.filter(p => p.loggedIn).length} đã đăng nhập). Không thu nhỏ cửa sổ / tắt màn hình khi chạy.
             </span>
           )}
-          {platform === "Veo3" && (
+          {platform === "Veo3" && activePanel === "projects" && (
             <>
               <Btn
                 variant="primary"
@@ -994,7 +1072,7 @@ export default function App() {
               </Btn>
             </>
           )}
-          {platform === "Grok" && (
+          {platform === "Grok" && activePanel === "projects" && (
             <Btn
               variant="primary"
               disabled={!hasPendingJobs || accounts.length === 0 || isStarting}

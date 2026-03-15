@@ -6,7 +6,7 @@ export type Duration    = "6s" | "10s"
 export type MediaType   = "Image" | "Video"
 export type JobStatus   = "pending" | "running" | "done" | "failed"
 export type AcctStatus  = "idle" | "logging_in" | "ready" | "failed" | "running"
-export type AppPanel    = "projects" | "accounts"
+export type AppPanel    = "projects" | "accounts" | "guide"
 
 // ─── Grok project (grok.com/imagine) ─────────────────────────────────────────
 // One project = one "video" with many prompts; mode = prompt_only | edit_image | animate_image

@@ -23,7 +23,6 @@ export function Veo3NewProjectModal({ onClose, onSave, initial, scripts = [] }: 
   const [multiplier, setMultiplier] = useState<Veo3Multiplier>(initial?.multiplier ?? 2)
   const [promptText, setPromptText] = useState(initial && !initial.useScripts ? initial.prompts.join("\n\n") : "")
   const [startFramesDir, setStartFramesDir] = useState(initial?.startFramesDir ?? initial?.imageDir ?? "")
-  const [endFramesDir, setEndFramesDir] = useState(initial?.endFramesDir ?? "")
   const [useScripts, setUseScripts] = useState(!!(initial?.useScripts && initial?.scriptIds?.length))
   const [selectedScriptIds, setSelectedScriptIds] = useState<Set<string>>(new Set(initial?.scriptIds ?? []))
 
@@ -36,7 +35,6 @@ export function Veo3NewProjectModal({ onClose, onSave, initial, scripts = [] }: 
       setLandscape(initial.landscape)
       setMultiplier(initial.multiplier)
       setStartFramesDir(initial.startFramesDir ?? initial.imageDir ?? "")
-      setEndFramesDir(initial.endFramesDir ?? "")
       setUseScripts(!!(initial.useScripts && initial.scriptIds?.length))
       setSelectedScriptIds(new Set(initial.scriptIds?.length ? [initial.scriptIds[0]] : []))
       if (!initial.useScripts) setPromptText(initial.prompts.join("\n\n"))
@@ -51,11 +49,6 @@ export function Veo3NewProjectModal({ onClose, onSave, initial, scripts = [] }: 
   const handlePickStartFrames = async () => {
     const dir = await (window as any).electronAPI?.selectDirectory?.()
     if (dir) setStartFramesDir(dir)
-  }
-
-  const handlePickEndFrames = async () => {
-    const dir = await (window as any).electronAPI?.selectDirectory?.()
-    if (dir) setEndFramesDir(dir)
   }
 
   const handlePickTxt = async () => {
@@ -82,7 +75,7 @@ export function Veo3NewProjectModal({ onClose, onSave, initial, scripts = [] }: 
       multiplier,
       prompts,
       startFramesDir: startFramesDir || undefined,
-      endFramesDir: endFramesDir || undefined,
+      endFramesDir: undefined,
       ...(startFramesDir && { imageDir: startFramesDir }),
       ...(useScripts && selectedScriptIds.size > 0 && {
         useScripts: true,
@@ -226,19 +219,6 @@ export function Veo3NewProjectModal({ onClose, onSave, initial, scripts = [] }: 
           <Btn onClick={handlePickStartFrames}><Icon.Folder /> Chọn</Btn>
         </div>
         {startFramesDir && (
-          <div style={{ marginTop: 5, fontSize: 11, color: "var(--text3)", fontFamily: "var(--mono)" }}>
-            → 1.png, 2.png... trong thư mục này
-          </div>
-        )}
-      </ModalRow>
-
-      <ModalRow>
-        <ModalLabel>Thư mục ảnh cuối (end frame, tùy chọn). 1.png, 2.png... cùng thứ tự như ảnh đầu</ModalLabel>
-        <div style={{ display: "flex", gap: 8 }}>
-          <Input value={endFramesDir} onChange={setEndFramesDir} placeholder="Không dùng ảnh cuối" style={{ flex: 1 }}/>
-          <Btn onClick={handlePickEndFrames}><Icon.Folder /> Chọn</Btn>
-        </div>
-        {endFramesDir && (
           <div style={{ marginTop: 5, fontSize: 11, color: "var(--text3)", fontFamily: "var(--mono)" }}>
             → 1.png, 2.png... trong thư mục này
           </div>

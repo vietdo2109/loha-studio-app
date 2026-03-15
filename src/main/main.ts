@@ -39,14 +39,15 @@ let mainWindow: BrowserWindow | null = null
 let autoUpdateInterval: NodeJS.Timeout | null = null
 let licenseRefreshInterval: NodeJS.Timeout | null = null
 let hasDownloadedUpdate = false
+const APP_DISPLAY_NAME = 'Loha Studio'
 
 // ─── Activation / licensing (online key server) ───────────────────────────────
 const LICENSE_STATE_FILE = 'license-state.json'
 const DEVICE_ID_FILE = 'license-device-id.txt'
 const LICENSE_OFFLINE_GRACE_MS = 24 * 60 * 60 * 1000
 const LICENSE_REFRESH_INTERVAL_MS = 2 * 60 * 60 * 1000
-const LICENSE_API_BASE_URL = (process.env.LICENSE_API_BASE_URL || 'http://localhost:3001').replace(/\/+$/, '')
-const LICENSE_ADMIN_URL = process.env.LICENSE_ADMIN_URL || ''
+const LICENSE_API_BASE_URL = (process.env.LICENSE_API_BASE_URL || 'https://lohastudioadmin.vercel.app').replace(/\/+$/, '')
+const LICENSE_ADMIN_URL = process.env.LICENSE_ADMIN_URL || `${LICENSE_API_BASE_URL}/admin`
 
 type LicenseRole = 'user' | 'admin'
 
@@ -216,6 +217,19 @@ function requireActivationForAction(actionName: string):
   return { ok: false, error: 'Ứng dụng chưa kích hoạt hợp lệ hoặc đã hết hạn. Vui lòng kích hoạt online.' }
 }
 
+function formatUpdaterError(err: unknown): { userMessage: string; raw: string } {
+  const raw = String((err as any)?.message ?? err ?? '').trim()
+  const oneLine = raw.split('\n')[0]?.trim() || raw
+  const isGithubAtom404 = /releases\.atom/i.test(raw) && /404/i.test(raw)
+  if (isGithubAtom404) {
+    return {
+      userMessage: 'Update channel chưa có release đầu tiên. Hãy publish tag vX.Y.Z trên GitHub.',
+      raw,
+    }
+  }
+  return { userMessage: oneLine.slice(0, 220), raw }
+}
+
 function setupAutoUpdater() {
   if (!app.isPackaged) return
   if (process.env.DISABLE_AUTO_UPDATE === '1') {
@@ -249,8 +263,9 @@ function setupAutoUpdater() {
     send('app-update-status', { stage: 'downloaded', version: info.version })
   })
   autoUpdater.on('error', (err) => {
-    appLog('warn', `Auto update: ${err?.message ?? String(err)}`, 'main')
-    send('app-update-status', { stage: 'error', message: err?.message ?? String(err) })
+    const f = formatUpdaterError(err)
+    appLog('warn', `Auto update: ${f.raw}`, 'main')
+    send('app-update-status', { stage: 'error', message: f.userMessage })
   })
 
   setTimeout(() => {
@@ -279,12 +294,27 @@ function setupLicenseRefreshLoop() {
   licenseRefreshInterval = setInterval(run, LICENSE_REFRESH_INTERVAL_MS)
 }
 
+function resolveWindowIconPath(): string | undefined {
+  const candidates = [
+    // Dev/runtime from project root
+    path.join(process.cwd(), 'build', 'icon.ico'),
+    // When app is launched from built output with different cwd
+    path.join(app.getAppPath(), 'build', 'icon.ico'),
+    // Fallback for some packaged layouts
+    path.join(process.resourcesPath, 'build', 'icon.ico'),
+  ]
+  return candidates.find((p) => fs.existsSync(p))
+}
+
 function createWindow() {
+  const iconPath = resolveWindowIconPath()
   mainWindow = new BrowserWindow({
     width:           1100,
     height:          720,
     minWidth:        860,
     minHeight:       580,
+    title:           APP_DISPLAY_NAME,
+    ...(iconPath ? { icon: iconPath } : {}),
     backgroundColor: '#f5f4f1',
     titleBarStyle:   'hiddenInset',   // macOS: traffic lights overlap titlebar
     webPreferences: {
@@ -301,9 +331,11 @@ function createWindow() {
   } else {
     mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'))
   }
+  mainWindow.setTitle(APP_DISPLAY_NAME)
 }
 
 app.whenReady().then(() => {
+  app.setName(APP_DISPLAY_NAME)
   initAppLogger(app.getPath('userData'))
   appLog('info', 'Loha Studio ready', 'main')
   createWindow()
@@ -398,7 +430,8 @@ ipcMain.handle('check-for-updates-now', async () => {
     await autoUpdater.checkForUpdates()
     return { success: true }
   } catch (err: any) {
-    return { success: false, error: err?.message ?? String(err) }
+    const f = formatUpdaterError(err)
+    return { success: false, error: f.userMessage }
   }
 })
 

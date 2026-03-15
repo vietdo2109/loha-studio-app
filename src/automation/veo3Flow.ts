@@ -757,102 +757,72 @@ export async function flowAddImageToPromptByMediaName(page: Page, mediaName: str
       ? page.locator(S.framesEndSlot).first()
       : null
 
-  if (slotBtn != null) {
-    try {
-      let lastErr: string | null = null
-      for (let openAttempt = 1; openAttempt <= 3; openAttempt++) {
-        await bringProjectPageToFront(page)
-        await slotBtn.waitFor({ state: 'visible', timeout: 10000 })
-        traceImportLog(`slot=${slotIndex} media=${mediaName} button visible (openAttempt=${openAttempt})`)
-        try {
-          await slotBtn.click({ timeout: 6000 })
-        } catch {
-          const h = await slotBtn.elementHandle()
-          if (!h) throw new Error('slot button not interactable')
-          await h.evaluate((node: HTMLElement) => node.click())
-        }
-        await waitStable(page, 400)
-        const dialog = page.locator('[role="dialog"]').first()
-        await dialog.waitFor({ state: 'visible', timeout: 8000 })
-        traceImportLog(`slot=${slotIndex} dialog opened (openAttempt=${openAttempt})`)
-
-        const rows = dialog.locator('[data-testid="virtuoso-item-list"] [data-index]')
-        // Exact filename text first (explicit requirement).
-        let row = rows.filter({ has: page.locator(`div:text-is("${mediaName}")`) }).first()
-        let found = (await row.count()) > 0
-        let findAttempt = 0
-        while (!found && findAttempt < 4) {
-          findAttempt++
-          // Fallback matcher: media UUID inside image src.
-          const fallbackRow = rows.filter({ has: page.locator(`img[src*="name=${mediaName}"]`) }).first()
-          const fallbackRow2 = rows.filter({ has: page.locator(`img[src*="${mediaName}"]`) }).first()
-          if ((await fallbackRow.count()) > 0) {
-            row = fallbackRow
-            found = true
-            break
-          }
-          if ((await fallbackRow2.count()) > 0) {
-            row = fallbackRow2
-            found = true
-            break
-          }
-          const rowsCount = await rows.count().catch(() => -1)
-          traceImportLog(`slot=${slotIndex} media not found, attempt=${findAttempt}, visibleRows=${rowsCount}`)
-          const scroller = dialog.locator('[data-virtuoso-scroller="true"]').first()
-          await scroller.hover().catch(() => {})
-          await page.mouse.wheel(0, 1200).catch(() => {})
-          await page.waitForTimeout(350)
-        }
-        if (!found) {
-          lastErr = `media ${mediaName} not found in content dialog for slot ${slotIndex}`
-          await page.keyboard.press('Escape').catch(() => {})
-          await waitStable(page, 250)
-          continue
-        }
-
-        await row.waitFor({ state: 'visible', timeout: 12000 })
-        const titledImg = row.locator(`img[alt="${mediaName}"], img[title="${mediaName}"]`).first()
-        const img = ((await titledImg.count().catch(() => 0)) > 0) ? titledImg : row.locator('img').first()
-        let clicked = false
-        let clickErr: string | null = null
-        for (let clickAttempt = 1; clickAttempt <= 3; clickAttempt++) {
-          try {
-            await row.scrollIntoViewIfNeeded().catch(() => {})
-            await img.scrollIntoViewIfNeeded().catch(() => {})
-            await img.waitFor({ state: 'visible', timeout: 6000 })
-            await row.hover().catch(() => {})
-            await waitStable(page, 250 + clickAttempt * 200)
-            await img.click({ timeout: 5000 })
-            clicked = true
-            break
-          } catch (e) {
-            clickErr = (e as Error).message
-            traceImportLog(`slot=${slotIndex} click attempt ${clickAttempt} failed: ${clickErr}`)
-          }
-        }
-        if (clicked) {
-          traceImportLog(`slot=${slotIndex} clicked media row`)
-          await waitStable(page, 450)
-          await page.keyboard.press('Escape').catch(() => {})
-          await waitStable(page, 200)
-          await captureImageImportTrace(page, 'media-selected', { slotIndex, mediaName })
-          return
-        }
-        lastErr = clickErr ?? 'failed to click media row'
-        await page.keyboard.press('Escape').catch(() => {})
-        await waitStable(page, 250)
+  if (slotBtn == null) {
+    throw new Error(`JS-only import requires frame slot button for slot=${slotIndex}`)
+  }
+  try {
+    let lastErr: string | null = null
+    for (let openAttempt = 1; openAttempt <= 1; openAttempt++) {
+      await bringProjectPageToFront(page)
+      await slotBtn.waitFor({ state: 'visible', timeout: 10000 })
+      traceImportLog(`slot=${slotIndex} media=${mediaName} button visible (openAttempt=${openAttempt})`)
+      try {
+        await slotBtn.click({ timeout: 6000 })
+      } catch {
+        const h = await slotBtn.elementHandle()
+        if (!h) throw new Error('slot button not interactable')
+        await h.evaluate((node: HTMLElement) => node.click())
       }
-      await captureImageImportTrace(page, 'row-click-failed', { slotIndex, mediaName, lastErr })
-      throw new Error(`failed to click media row for ${mediaName}: ${lastErr ?? 'unknown'}`)
-    } catch (e) {
-      await captureImageImportTrace(page, 'slot-picker-failed', { slotIndex, mediaName, error: (e as Error).message })
-      stepLog(`Step 4: frame-slot picker failed, fallback to right-click add: ${(e as Error).message}`)
+      await waitStable(page, 400)
+      const dialog = page.locator('[role="dialog"]').first()
+      await dialog.waitFor({ state: 'visible', timeout: 8000 })
+      traceImportLog(`slot=${slotIndex} dialog opened (openAttempt=${openAttempt})`)
+
+      // JS-only pick path: exact/contains filename text and force dispatch click events.
+      const jsPicked = await page.evaluate(({ wanted }) => {
+        const dialogs = Array.from(document.querySelectorAll('[role="dialog"]'))
+        const dialogEl = dialogs.find(d => (d as HTMLElement).offsetParent !== null) as HTMLElement | undefined
+        if (!dialogEl) return { ok: false, reason: 'dialog-not-visible' }
+
+        const rows = Array.from(dialogEl.querySelectorAll('[data-testid="virtuoso-item-list"] [data-index]')) as HTMLElement[]
+        const norm = (s: string) => s.replace(/\s+/g, ' ').trim()
+        const wantedNorm = norm(wanted)
+
+        const row = rows.find(r => {
+          const text = norm(r.textContent || '')
+          return text === wantedNorm || text.includes(wantedNorm)
+        })
+        if (!row) return { ok: false, reason: 'row-not-found-by-filename' }
+
+        row.scrollIntoView({ block: 'center' })
+        const clickTarget = (row.querySelector(`img[alt="${wanted}"], img[title="${wanted}"]`) as HTMLElement | null)
+          || (row.querySelector('img') as HTMLElement | null)
+          || row
+        ;['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'].forEach(type => {
+          clickTarget.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }))
+        })
+        return { ok: true }
+      }, { wanted: mediaName })
+      if (jsPicked?.ok) {
+        traceImportLog(`slot=${slotIndex} JS-picked media by filename=${mediaName}`)
+        await waitStable(page, 450)
+        await page.keyboard.press('Escape').catch(() => {})
+        await waitStable(page, 200)
+        await captureImageImportTrace(page, 'media-selected', { slotIndex, mediaName, via: 'js-filename-match' })
+        return
+      }
+      lastErr = jsPicked?.reason ?? 'js-pick-miss'
       await page.keyboard.press('Escape').catch(() => {})
       await waitStable(page, 250)
     }
+    await captureImageImportTrace(page, 'row-click-failed', { slotIndex, mediaName, lastErr })
+    throw new Error(`failed JS-only pick for ${mediaName}: ${lastErr ?? 'unknown'}`)
+  } catch (e) {
+    await captureImageImportTrace(page, 'slot-picker-failed', { slotIndex, mediaName, error: (e as Error).message })
+    await page.keyboard.press('Escape').catch(() => {})
+    await waitStable(page, 250)
+    throw e
   }
-
-  await fallbackRightClickAdd()
   })
 }
 
