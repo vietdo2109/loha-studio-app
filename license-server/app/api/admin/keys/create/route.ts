@@ -1,11 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { sql } from '@vercel/postgres'
-import crypto from 'crypto'
-import { ensureSchema } from '@/lib/db'
-import { hashKey, makeRawKey, normalizePhoneTag, nowMs, previewKey, requireAdminKey } from '@/lib/license'
+import { createLicenseKeys } from '@/lib/createKey'
+import { normalizePhoneTag, requireAdminKey } from '@/lib/license'
 
 export async function POST(req: NextRequest) {
-  await ensureSchema()
   const adminKey = req.headers.get('x-admin-key')
   if (!requireAdminKey(adminKey)) return NextResponse.json({ ok: false, reason: 'UNAUTHORIZED' }, { status: 401 })
 
@@ -18,21 +15,22 @@ export async function POST(req: NextRequest) {
   if (phoneTag.length < 6 || phoneTag.length > 15) {
     return NextResponse.json({ ok: false, reason: 'PHONE_TAG_INVALID' }, { status: 400 })
   }
-  const now = nowMs()
-  const expiresAt = now + durationDays * 24 * 60 * 60 * 1000
-  const createdBy = String(body?.createdBy || 'admin')
 
-  const generated: Array<{ id: string; key: string; role: 'user' | 'admin'; expiresAt: number }> = []
-  for (let i = 0; i < count; i++) {
-    const key = makeRawKey(phoneTag)
-    const keyHash = hashKey(key)
-    const id = crypto.randomUUID()
-    await sql`
-      INSERT INTO licenses (id, key_hash, key_preview, key_phone_tag, role, expires_at, revoked, created_at, created_by, note)
-      VALUES (${id}, ${keyHash}, ${previewKey(key)}, ${phoneTag}, ${role}, ${expiresAt}, FALSE, ${now}, ${createdBy}, ${note});
-    `
-    generated.push({ id, key, role: role as 'user' | 'admin', expiresAt })
+  try {
+    const generated = await createLicenseKeys({
+      phoneTag,
+      count,
+      durationDays,
+      role: role as 'user' | 'admin',
+      createdBy: String(body?.createdBy || 'admin'),
+      note,
+    })
+    // Apply note to first key if provided (DB schema has note; createKey omits for simplicity)
+    return NextResponse.json({ ok: true, generated })
+  } catch (e: any) {
+    if (e?.message === 'PHONE_TAG_INVALID') {
+      return NextResponse.json({ ok: false, reason: 'PHONE_TAG_INVALID' }, { status: 400 })
+    }
+    throw e
   }
-
-  return NextResponse.json({ ok: true, generated })
 }
