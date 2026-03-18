@@ -39,7 +39,10 @@ let mainWindow: BrowserWindow | null = null
 let autoUpdateInterval: NodeJS.Timeout | null = null
 let licenseRefreshInterval: NodeJS.Timeout | null = null
 let hasDownloadedUpdate = false
-const APP_DISPLAY_NAME = 'Loha Studio'
+declare const __APP_DISPLAY_NAME__: string
+declare const __BUILD_ICON_FILE__: string
+const APP_DISPLAY_NAME = typeof __APP_DISPLAY_NAME__ !== 'undefined' ? __APP_DISPLAY_NAME__ : 'Loha Studio'
+const BUILD_ICON_FILE = typeof __BUILD_ICON_FILE__ !== 'undefined' ? __BUILD_ICON_FILE__ : 'icon.ico'
 
 // ─── Activation / licensing (online key server) ───────────────────────────────
 const LICENSE_STATE_FILE = 'license-state.json'
@@ -295,12 +298,17 @@ function setupLicenseRefreshLoop() {
 }
 
 function resolveWindowIconPath(): string | undefined {
+  const iconName = BUILD_ICON_FILE
   const candidates = [
     // Dev/runtime from project root
-    path.join(process.cwd(), 'build', 'icon.ico'),
+    path.join(process.cwd(), 'build', iconName),
     // When app is launched from built output with different cwd
+    path.join(app.getAppPath(), 'build', iconName),
+    // Fallback for some packaged layouts (extraResources)
+    path.join(process.resourcesPath, 'build', iconName),
+    // Fallback to default icon.ico
+    path.join(process.cwd(), 'build', 'icon.ico'),
     path.join(app.getAppPath(), 'build', 'icon.ico'),
-    // Fallback for some packaged layouts
     path.join(process.resourcesPath, 'build', 'icon.ico'),
   ]
   return candidates.find((p) => fs.existsSync(p))
@@ -336,8 +344,8 @@ function createWindow() {
 
 app.whenReady().then(() => {
   app.setName(APP_DISPLAY_NAME)
-  initAppLogger(app.getPath('userData'))
-  appLog('info', 'Loha Studio ready', 'main')
+  initAppLogger(app.getPath('userData'), APP_DISPLAY_NAME)
+  appLog('info', `${APP_DISPLAY_NAME} ready`, 'main')
   createWindow()
   setupAutoUpdater()
   setupLicenseRefreshLoop()

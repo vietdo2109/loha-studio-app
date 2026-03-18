@@ -346,19 +346,45 @@ export async function flowSetVideoMode(page: Page, opts: Veo3FlowOptions = {}): 
     stepLog(`Step 2: AI model selected -> ${modelLabel}`)
   }
 
-  if (opts.landscape !== undefined) {
-    const tab = page.locator(opts.landscape ? 'button[role="tab"]:has-text("Ngang")' : 'button[role="tab"]:has-text("Dọc")').first()
+  // Frame mode (Khung hình) vs Ingredients mode (Thành phần)
+  if (opts.videoMode) {
+    const frameModeLabel = opts.videoMode === 'ingredients' ? 'Thành phần' : 'Khung hình'
+    const tab = page.locator(`button[role="tab"]:has-text("${frameModeLabel}")`).first()
     if ((await tab.count()) > 0) {
-      await tab.click()
-      await waitStable(page)
+      const isSelected = await tab.getAttribute('data-state').then(a => a === 'active').catch(() => false)
+      if (!isSelected) {
+        await tab.click()
+        await waitStable(page, 400)
+      }
+    }
+  }
+
+  // Aspect ratio: 16:9 (landscape) / 9:16 (portrait). Fallback: Ngang/Dọc (older locale)
+  if (opts.landscape !== undefined) {
+    const ratioSelectors = opts.landscape
+      ? ['button[role="tab"]:has-text("16:9")', 'button[role="tab"]:has-text("Ngang")']
+      : ['button[role="tab"]:has-text("9:16")', 'button[role="tab"]:has-text("Dọc")']
+    for (const sel of ratioSelectors) {
+      const tab = page.locator(sel).first()
+      if ((await tab.count()) > 0) {
+        const isSelected = await tab.getAttribute('data-state').then(a => a === 'active').catch(() => false)
+        if (!isSelected) {
+          await tab.click()
+          await waitStable(page, 400)
+        }
+        break
+      }
     }
   }
 
   if (opts.multiplier) {
     const tab = page.locator(`button[role="tab"]:has-text("x${opts.multiplier}")`).first()
     if ((await tab.count()) > 0) {
-      await tab.click()
-      await waitStable(page)
+      const isSelected = await tab.getAttribute('data-state').then(a => a === 'active').catch(() => false)
+      if (!isSelected) {
+        await tab.click()
+        await waitStable(page, 400)
+      }
     }
   }
 

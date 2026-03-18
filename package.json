@@ -1,6 +1,6 @@
 {
   "name": "video-automation-tool",
-  "version": "1.0.3",
+  "version": "1.0.5",
   "description": "Grok AI video automation tool",
   "main": "out/main/main.js",
   "scripts": {

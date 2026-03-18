@@ -22,9 +22,9 @@ export const VEO3_SELECTORS = {
   // Settings menu (settings_menu.html) — Image / Video tabs
   settingsMenuVideoTab: 'button[role="tab"]:has-text("Video")',
   settingsMenuImageTab: 'button[role="tab"]:has-text("Image")',
-  // Aspect: Ngang (landscape) / Dọc (portrait)
-  settingsMenuLandscape: 'button[role="tab"]:has-text("Ngang")',
-  settingsMenuPortrait: 'button[role="tab"]:has-text("Dọc")',
+  // Aspect: 16:9 (landscape) / 9:16 (portrait) — UI may also use "Ngang"/"Dọc"
+  settingsMenuLandscape: 'button[role="tab"]:has-text("16:9")',
+  settingsMenuPortrait: 'button[role="tab"]:has-text("9:16")',
   // Multiplier x1, x2, x3, x4
   settingsMenuMultiplier: (n: 1 | 2 | 3 | 4) => `button[role="tab"]:has-text("x${n}")`,
   // Model selector in settings menu (opens model options submenu)

@@ -30,13 +30,13 @@ function formatLine(level: string, message: string, source?: string): string {
   return `${ts} ${level.toUpperCase().padEnd(5)}${src} ${message}\n`
 }
 
-export function initAppLogger(userDataPath: string): void {
+export function initAppLogger(userDataPath: string, appName?: string): void {
   logDir = path.join(userDataPath, 'logs')
   ensureLogDir()
   const fp = getLogFilePath()
   if (fp) {
     try {
-      fs.appendFileSync(fp, formatLine('info', `App started (Loha Studio)`, 'main'))
+      fs.appendFileSync(fp, formatLine('info', `App started (${appName ?? 'Loha Studio'})`, 'main'))
     } catch (_) {}
   }
 }

@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react"
 import type { Platform, AppPanel, Project, QueueProject, QueueJob, JobStatus, Account, AcctStatus, Veo3Project, Veo3QueueProject, Veo3QueueJob, Script } from "./types"
+declare const __APP_NAME__: string
 import { GlobalStyle } from "./GlobalStyle"
 import {
   Icon,
@@ -65,6 +66,11 @@ export default function App() {
   const [activationError, setActivationError] = useState("")
   const [updateStatus, setUpdateStatus] = useState<string>("")
   const [updateReady, setUpdateReady] = useState(false)
+
+  const appName = typeof __APP_NAME__ !== 'undefined' ? __APP_NAME__ : 'Loha Studio'
+  useEffect(() => {
+    document.title = `${appName} - Mua tool: 039.969.2275`
+  }, [appName])
 
   const allSelected = platform === "Veo3"
     ? veo3Projects.length > 0 && veo3Projects.every(p => veo3SelectedIds.has(p.id))
@@ -643,7 +649,7 @@ export default function App() {
           paddingLeft: 80, paddingRight: 12,
           gap: 8, flexShrink: 0,
         } as any}>
-          <span style={{ fontWeight: 700, fontSize: 13, letterSpacing: "-.01em" }}>Loha Studio</span>
+          <span style={{ fontWeight: 700, fontSize: 13, letterSpacing: "-.01em" }}>{appName}</span>
           <div style={{ width: 1, height: 14, background: "var(--border)", margin: "0 4px" }}/>
           <div style={{ display: "flex", gap: 2, WebkitAppRegion: "no-drag" } as any}>
             {(["Veo3", "Grok"] as Platform[]).map(p => (
