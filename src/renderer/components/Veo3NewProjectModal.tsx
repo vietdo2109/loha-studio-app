@@ -19,6 +19,7 @@ export function Veo3NewProjectModal({ onClose, onSave, initial, scripts = [] }: 
     { value: 'Nano Banana 2', label: '🍌 Nano Banana 2' },
     { value: 'Imagen 4', label: 'Imagen 4' },
   ]
+  const SHOW_IMAGE_MODE = false
   const isEdit = !!initial
   const [name,       setName]       = useState(initial?.name ?? "")
   const [outputDir,  setOutputDir]  = useState(initial?.outputDir ?? "")
@@ -82,13 +83,13 @@ export function Veo3NewProjectModal({ onClose, onSave, initial, scripts = [] }: 
       name: name.trim(),
       outputDir,
       aiModel,
-      generationMode,
       videoMode,
       landscape,
       multiplier,
       downloadResolution,
-      imageDownloadResolution: generationMode === 'image' ? imageDownloadResolution : undefined,
-      imageModel: generationMode === 'image' ? imageModel : undefined,
+      imageDownloadResolution: SHOW_IMAGE_MODE && generationMode === 'image' ? imageDownloadResolution : undefined,
+      imageModel: SHOW_IMAGE_MODE && generationMode === 'image' ? imageModel : undefined,
+      generationMode: SHOW_IMAGE_MODE ? generationMode : 'video',
       prompts,
       startFramesDir: startFramesDir || undefined,
       endFramesDir: undefined,
@@ -125,7 +126,7 @@ export function Veo3NewProjectModal({ onClose, onSave, initial, scripts = [] }: 
         )}
       </ModalRow>
 
-      <ModalRow>
+      {/* <ModalRow>
         <ModalLabel>Flow</ModalLabel>
         <div style={{ display: "flex", gap: 8 }}>
           <button
@@ -156,13 +157,14 @@ export function Veo3NewProjectModal({ onClose, onSave, initial, scripts = [] }: 
             Thay sản phẩm vào mẫu
           </button>
         </div>
-      </ModalRow>
+      </ModalRow> */}
 
-      {generationMode === "video" && (
+      {(SHOW_IMAGE_MODE ? generationMode === "video" : true) && (
       <ModalRow>
         <ModalLabel>Chế độ video (Flow)</ModalLabel>
         <div style={{ display: "flex", gap: 8 }}>
           <button
+            disabled={true}
             type="button"
             onClick={() => setVideoMode("ingredients")}
             style={{
@@ -170,6 +172,8 @@ export function Veo3NewProjectModal({ onClose, onSave, initial, scripts = [] }: 
               border: `1.5px solid ${videoMode === "ingredients" ? "var(--accent)" : "var(--border)"}`,
               background: videoMode === "ingredients" ? "var(--accent-bg)" : "var(--bg)",
               color: videoMode === "ingredients" ? "var(--accent)" : "var(--text2)",
+              opacity: 0.5,
+              cursor: "not-allowed",
             }}
           >
             Ingredients (tối đa 3 ảnh/prompt)
@@ -260,7 +264,7 @@ export function Veo3NewProjectModal({ onClose, onSave, initial, scripts = [] }: 
         <div>
           <ModalLabel>Độ phân giải tải</ModalLabel>
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-            {generationMode === "image"
+            {SHOW_IMAGE_MODE && generationMode === "image"
               ? (['1k', '2k', '4k'] as const).map((r) => (
                   <button
                     key={r}
@@ -317,7 +321,7 @@ export function Veo3NewProjectModal({ onClose, onSave, initial, scripts = [] }: 
 
       <ModalRow>
         <ModalLabel>
-          {generationMode === "image"
+          {SHOW_IMAGE_MODE && generationMode === "image"
             ? "Thư mục ảnh — ảnh mẫu phải được đặt tên là sample.png hoặc sample.jpg"
             : "Thư mục ảnh đầu (start frame). 1.png, 2.png... theo thứ tự kịch bản hoặc prompt bên dưới"}
         </ModalLabel>
@@ -327,7 +331,7 @@ export function Veo3NewProjectModal({ onClose, onSave, initial, scripts = [] }: 
         </div>
         {startFramesDir && (
           <div style={{ marginTop: 5, fontSize: 11, color: "var(--text3)", fontFamily: "var(--mono)" }}>
-            → {generationMode === "image" ? "sample.png hoặc sample.jpg" : "1.png, 2.png... trong thư mục này"}
+            → {SHOW_IMAGE_MODE && generationMode === "image" ? "sample.png hoặc sample.jpg" : "1.png, 2.png... trong thư mục này"}
           </div>
         )}
       </ModalRow>

@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.1.1] - 2026-03-19
+
+### Changed
+
+- Image mode (Hình ảnh) hidden in this release (SHOW_IMAGE_MODE=false)
+
 ## [1.1.0] - 2026-03-19
 
 ### Added
