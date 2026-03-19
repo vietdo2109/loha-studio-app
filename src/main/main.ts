@@ -1304,6 +1304,10 @@ ipcMain.handle('veo3-run-queue', async (_event,   queue: Array<{
   videoMode: 'frames' | 'ingredients'
   landscape: boolean
   multiplier: 1 | 2 | 3 | 4
+  downloadResolution?: '720p' | '1080p' | '4k'
+  imageDownloadResolution?: '1k' | '2k' | '4k'
+  generationMode?: 'video' | 'image'
+  imageModel?: string
 }>) => {
   const gate = requireActivationForAction('veo3-run-queue')
   if (!gate.ok) return { success: false, error: gate.error }
@@ -1407,9 +1411,13 @@ ipcMain.handle('veo3-run-queue', async (_event,   queue: Array<{
         videoMode: project.videoMode,
         landscape: project.landscape,
         multiplier: project.multiplier,
+        downloadResolution: project.downloadResolution,
+        generationMode: project.generationMode,
+        imageModel: project.imageModel,
       }, {
         outputDir: outputDirForProject,
         expectedCount,
+        downloadResolution: project.downloadResolution,
         onProgress: (completedCount) => {
           for (let i = 0; i < completedCount && i < project.pendingJobs.length; i++) {
             send('job-progress', { projectId: project.id, jobId: project.pendingJobs[i].id, progress: 100 })

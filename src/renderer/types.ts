@@ -45,17 +45,33 @@ export interface QueueProject extends Project {
 // Image naming for Frames: 1a/1b = video 1 start/end; 2a = video 2 start only; single-video: 1.png, 2.png
 
 export type Veo3VideoMode = 'frames' | 'ingredients'
+/** Video = tạo video. Image = tạo hình ảnh (Hình ảnh tab trong Flow). */
+export type Veo3GenerationMode = 'video' | 'image'
 export type Veo3Multiplier = 1 | 2 | 3 | 4
 export type Veo3AiModel = 'veo-3.1-fast' | 'veo-3.1-fast-lower-priority' | 'veo-3.1-quality'
+/** Image mode models (Hình ảnh tab). */
+export type Veo3ImageModel = 'Nano Banana Pro' | 'Nano Banana 2' | 'Imagen 4'
+/** 720p = tải ngay (không upscale). 1080p/4k = upscale rồi tải. */
+export type Veo3DownloadResolution = '720p' | '1080p' | '4k'
+/** Image mode download resolution (khác video: 1k, 2k, 4k). */
+export type Veo3ImageDownloadResolution = '1k' | '2k' | '4k'
 
 export interface Veo3Project {
   id:          string
   name:        string
   outputDir:   string
   aiModel:     Veo3AiModel
+  /** Image mode model (chỉ khi generationMode=image). */
+  imageModel?: Veo3ImageModel
+  /** Video = tạo video. Image = tạo hình ảnh (Hình ảnh trong Flow). */
+  generationMode?: Veo3GenerationMode
   videoMode:   Veo3VideoMode
   landscape:   boolean
   multiplier:  Veo3Multiplier
+  /** Độ phân giải tải video. 720p = tải ngay không upscale. */
+  downloadResolution?: Veo3DownloadResolution
+  /** Độ phân giải tải ảnh (chỉ khi generationMode=image): 1k, 2k, 4k. */
+  imageDownloadResolution?: Veo3ImageDownloadResolution
   prompts:     string[]
   /** @deprecated use startFramesDir */
   imageDir?:   string

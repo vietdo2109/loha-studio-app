@@ -859,7 +859,7 @@ export default function App() {
                 </button>
               </div>
 
-              <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0, overflow: "hidden" }}>
+              <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", minHeight: 0, overflow: "hidden" }}>
                 <div style={{
                   display: "flex", alignItems: "center", justifyContent: "space-between",
                   padding: "10px 14px", borderBottom: "1px solid var(--border)",
@@ -873,7 +873,7 @@ export default function App() {
                   )}
                 </div>
 
-                <div style={{ flex: 1, minHeight: 0, overflowY: "auto", overflowX: "hidden", padding: 10, display: "flex", flexDirection: "column", gap: 6 }}>
+                <div style={{ flex: 1, minHeight: 0, minWidth: 0, overflowY: "auto", overflowX: "hidden", padding: 10, display: "flex", flexDirection: "column", gap: 6 }}>
                   {platform === "Veo3" ? (
                     veo3Queue.length === 0 ? (
                       <div style={{

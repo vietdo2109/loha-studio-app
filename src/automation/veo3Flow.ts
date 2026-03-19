@@ -18,11 +18,18 @@ const DOM_STABLE_MS = 800
 
 export type Veo3VideoMode = 'frames' | 'ingredients'
 export type Veo3AiModel = 'veo-3.1-fast' | 'veo-3.1-fast-lower-priority' | 'veo-3.1-quality'
+export type Veo3DownloadResolution = '720p' | '1080p' | '4k'
+
 export type Veo3FlowOptions = {
   aiModel?: Veo3AiModel
+  /** When 'image', uses flowSetImageMode (Hình ảnh) instead of flowSetVideoMode. */
+  generationMode?: 'video' | 'image'
+  /** Image mode model (Nano Banana Pro, etc). Used when generationMode=image. */
+  imageModel?: string
   videoMode?: Veo3VideoMode
   landscape?: boolean
   multiplier?: 1 | 2 | 3 | 4
+  downloadResolution?: Veo3DownloadResolution
   imagePaths?: string[]
   maxImagesIngredients?: number
   maxImagesFrames?: number
@@ -391,6 +398,150 @@ export async function flowSetVideoMode(page: Page, opts: Veo3FlowOptions = {}): 
   await page.keyboard.press('Escape')
   await waitStable(page)
   stepLog('Step 2: Done')
+}
+
+/** Image mode settings: 1x, 9:16, Nano Banana Pro. Opens settings menu → Hình ảnh tab → sets aspect, multiplier, model.
+ * Use for image generation flow. Stops at settings selection (no download/upload folders or prompt yet). */
+export async function flowSetImageMode(
+  page: Page,
+  opts: { aspect?: '16:9' | '9:16'; multiplier?: 1 | 2 | 3 | 4; model?: string } = {}
+): Promise<void> {
+  const aspect = opts.aspect ?? '9:16'
+  const multiplier = opts.multiplier ?? 1
+  const modelLabel = opts.model ?? 'Nano Banana Pro'
+  stepLog(`Set Image mode: ${aspect}, x${multiplier}, ${modelLabel}`)
+  const promptBar = page
+    .locator('#__next div:has([role="textbox"][data-slate-editor="true"]):has(button:has(i:text-is("arrow_forward")))')
+    .first()
+  await promptBar.waitFor({ state: 'visible', timeout: 15000 })
+  await waitStable(page, 1200)
+
+  const candidateTriggers = [
+    promptBar.locator('button[type="button"][aria-haspopup="menu"]:has-text("Video")').first(),
+    promptBar.locator('button[type="button"][aria-haspopup="menu"]:has-text("Image")').first(),
+    promptBar.locator('button[type="button"][aria-haspopup="menu"]:has-text("Hình ảnh")').first(),
+    promptBar.locator('button[type="button"][aria-haspopup="menu"]:has-text("Nano Banana")').first(),
+    page.locator('#__next button[type="button"][aria-haspopup="menu"]:has-text("Video")').first(),
+    page.locator('#__next button[type="button"][aria-haspopup="menu"]:has-text("Image")').first(),
+    page.locator('#__next button[type="button"][aria-haspopup="menu"]:has-text("Hình ảnh")').first(),
+    page.locator('#__next button[type="button"][aria-haspopup="menu"]:has-text("Nano Banana")').first(),
+  ]
+  let openedMenu = false
+  for (const trigger of candidateTriggers) {
+    if ((await trigger.count()) === 0) continue
+    const visible = await trigger.isVisible().catch(() => false)
+    if (!visible) continue
+    try {
+      await trigger.click({ timeout: 6000 })
+      await waitStable(page, 500)
+      const imageTabProbe = page.locator('button[role="tab"]:has-text("Hình ảnh"), button[role="tab"]:has-text("Image")').first()
+      await imageTabProbe.waitFor({ state: 'visible', timeout: 3000 })
+      openedMenu = true
+      break
+    } catch {
+      try {
+        const el = await trigger.elementHandle()
+        if (el) {
+          await el.evaluate((node: HTMLElement) => node.click())
+          await waitStable(page, 500)
+          const imageTabProbe = page.locator('button[role="tab"]:has-text("Hình ảnh"), button[role="tab"]:has-text("Image")').first()
+          await imageTabProbe.waitFor({ state: 'visible', timeout: 3000 })
+          openedMenu = true
+          break
+        }
+      } catch {
+        // ignore
+      } finally {
+        await page.keyboard.press('Escape').catch(() => {})
+        await waitStable(page, 250)
+      }
+    }
+  }
+  if (!openedMenu) {
+    throw new Error('Could not open settings menu (Video/Image/Hình ảnh/Nano Banana).')
+  }
+
+  const imageTab = page.locator('button[role="tab"]:has-text("Hình ảnh"), button[role="tab"]:has-text("Image")').first()
+  await imageTab.waitFor({ state: 'visible', timeout: 8000 })
+  await imageTab.click()
+  await waitStable(page, 600)
+
+  // Aspect: 9:16 or 16:9
+  const ratioSelectors = aspect === '16:9'
+    ? ['button[role="tab"]:has-text("16:9")', 'button[role="tab"]:has-text("Ngang")']
+    : ['button[role="tab"]:has-text("9:16")', 'button[role="tab"]:has-text("Dọc")']
+  for (const sel of ratioSelectors) {
+    const tab = page.locator(sel).first()
+    if ((await tab.count()) > 0) {
+      const isSelected = await tab.getAttribute('data-state').then(a => a === 'active').catch(() => false)
+      if (!isSelected) {
+        await tab.click()
+        await waitStable(page, 400)
+      }
+      break
+    }
+  }
+
+  // Multiplier x1, x2, x3, x4
+  const multTab = page.locator(`button[role="tab"]:has-text("x${multiplier}")`).first()
+  if ((await multTab.count()) > 0) {
+    const isSelected = await multTab.getAttribute('data-state').then(a => a === 'active').catch(() => false)
+    if (!isSelected) {
+      await multTab.click()
+      await waitStable(page, 400)
+    }
+  }
+
+  // Model: Nano Banana Pro, Nano Banana 2, Imagen 4
+  const modelTriggerCandidates = [
+    page.locator('[data-radix-menu-content][role="menu"] button[type="button"][aria-haspopup="menu"]').first(),
+    page.locator('[data-radix-menu-content][role="menu"] button[aria-haspopup="menu"]').first(),
+  ]
+  let openedModelMenu = false
+  for (const trigger of modelTriggerCandidates) {
+    if ((await trigger.count()) === 0) continue
+    const visible = await trigger.isVisible().catch(() => false)
+    if (!visible) continue
+    try {
+      await trigger.click({ timeout: 7000 })
+      await waitStable(page, 350)
+      const modelOptionProbe = page.locator(`[role="menuitem"]:has-text("${modelLabel}") button, [role="menuitem"] button:has-text("${modelLabel}")`).first()
+      await modelOptionProbe.waitFor({ state: 'visible', timeout: 5000 })
+      openedModelMenu = true
+      break
+    } catch {
+      try {
+        const el = await trigger.elementHandle()
+        if (el) {
+          await el.evaluate((node: HTMLElement) => node.click())
+          await waitStable(page, 350)
+          const modelOptionProbe = page.locator(`[role="menuitem"]:has-text("${modelLabel}") button, [role="menuitem"] button:has-text("${modelLabel}")`).first()
+          await modelOptionProbe.waitFor({ state: 'visible', timeout: 5000 })
+          openedModelMenu = true
+          break
+        }
+      } catch {
+        // continue
+      }
+    }
+  }
+  if (!openedModelMenu) {
+    stepLog(`Could not open model selector; model ${modelLabel} may not be available in Image mode`)
+  } else {
+    const modelOption = page.locator(`[role="menuitem"]:has-text("${modelLabel}") button, [role="menuitem"] button:has-text("${modelLabel}")`).first()
+    try {
+      await modelOption.click({ timeout: 7000 })
+    } catch {
+      const el = await modelOption.elementHandle()
+      if (el) await el.evaluate((node: HTMLElement) => node.click())
+    }
+    await waitStable(page, 500)
+    stepLog(`Image model selected: ${modelLabel}`)
+  }
+
+  await page.keyboard.press('Escape')
+  await waitStable(page)
+  stepLog('Image mode settings done')
 }
 
 /** 3. Open content dialog, set files on file input, capture upload request/response details, wait for all tiles, then close dialog. Returns ordered media names and full upload log. */
@@ -1049,38 +1200,21 @@ export async function waitForGeneratedVideosCount(
   return lastCount
 }
 
-/** Right-click tile at tileIndex (0 = leftmost = N.mp4), open Tải xuống, click 1080p in submenu, then save to outputPath. Uses temp path + copy so we get the actual bytes; validates file is not HTML (redirect page). */
-export async function flowDownloadGeneratedVideo1080pAtTile(
+/** Right-click tile at tileIndex (0 = leftmost = N.mp4), open Tải xuống, click resolution in submenu, then save to outputPath.
+ * 720p = tải ngay (không upscale). 1080p/4k = upscale rồi tải. */
+export async function flowDownloadGeneratedVideoAtTile(
   page: Page,
   tileIndex: number,
-  outputPath: string
+  outputPath: string,
+  resolution: Veo3DownloadResolution = '1080p'
 ): Promise<void> {
-  stepLog(`Download tile ${tileIndex + 1} as 1080p to ${outputPath}`)
+  stepLog(`Download tile ${tileIndex + 1} as ${resolution} to ${outputPath}`)
   const tile = page.locator(S.generatedCompletedVideoTile).nth(tileIndex)
   await tile.waitFor({ state: 'visible', timeout: 10000 })
-  await tile.scrollIntoViewIfNeeded()
-  await waitStable(page, 150)
-  await page.keyboard.press('Escape')
-  await waitStable(page, 150)
-  // Right-click the video element so the download menu opens (not the list menu "Tạo bộ sưu tập" / "Dán").
-  const videoEl = tile.locator('video[src*="getMediaUrlRedirect"]').first()
-  await videoEl.evaluate((el: HTMLElement) => {
-    const rect = el.getBoundingClientRect()
-    const x = rect.left + rect.width / 2
-    const y = rect.top + rect.height / 2
-    el.dispatchEvent(
-      new MouseEvent('contextmenu', { bubbles: true, cancelable: true, view: window, button: 2, buttons: 2, clientX: x, clientY: y })
-    )
-  })
-  await waitStable(page, 200)
-  const downloadItem = page.locator(S.contextMenuDownload).first()
-  await downloadItem.waitFor({ state: 'visible', timeout: 5000 })
-  await downloadItem.hover()
-  await waitStable(page, 200)
   const dir = path.dirname(outputPath)
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
-  const downloadPromise = page.waitForEvent('download', { timeout: 60000 })
-  await page.locator(S.contextMenuDownload1080p).first().click()
+  const downloadPromise = page.waitForEvent('download', { timeout: resolution === '720p' ? 30000 : 120000 })
+  await openMenuHoverDownloadAndClickResolution(page, tile, resolution)
   const download = await downloadPromise
   const tmpPath = await download.path()
   if (tmpPath && fs.existsSync(tmpPath)) {
@@ -1105,21 +1239,25 @@ const ORDERED_TWO_PASS_DOWNLOAD = true
 /** Edit-page Download button can stay non-interactable while backend/upscale state settles. */
 const EDIT_PAGE_DOWNLOAD_CLICK_TIMEOUT_MS = 120000
 
-/** Opens context menu, opens Download submenu (hover), waits for resolution submenu, then clicks 1080p.
- * Works for both left and right submenus. If 1080p does not appear within ~2s after the first hover, we
- * hover "Tải xuống" again (matching the manual fix you observed) and wait once more before failing. */
-async function openMenuHoverDownloadAndClick1080p(
+/** Span text for resolution in menu (720p, 1080p, 4K). */
+const RESOLUTION_SPAN: Record<Veo3DownloadResolution, string> = {
+  '720p': '720p',
+  '1080p': '1080p',
+  '4k': '4K',
+}
+
+/** Opens context menu, opens Download submenu (hover), waits for resolution submenu, then clicks the resolution.
+ * 720p = tải ngay (không upscale). 1080p/4k = upscale rồi tải. */
+async function openMenuHoverDownloadAndClickResolution(
   page: Page,
-  tile: ReturnType<Page['locator']>
+  tile: ReturnType<Page['locator']>,
+  resolution: Veo3DownloadResolution
 ): Promise<void> {
+  const spanText = RESOLUTION_SPAN[resolution]
   await tile.scrollIntoViewIfNeeded()
   await waitStable(page, 150)
-  // Dismiss any toast/notification overlay so it doesn't intercept the right-click (e.g. "Upscaling your video").
   await page.keyboard.press('Escape')
   await waitStable(page, 150)
-  // If tile is near the right edge, the resolution submenu can open off-screen or the portalled menu
-  // may be tied to the wrong tile. Scroll so the tile is in the left 60% of the viewport to give the
-  // submenu room and reduce risk of clicking a stale menu.
   const tileBox = await tile.boundingBox().catch(() => null)
   if (tileBox) {
     const viewport = page.viewportSize()
@@ -1133,7 +1271,6 @@ async function openMenuHoverDownloadAndClick1080p(
       }
     }
   }
-  // Right-click on the VIDEO element inside the tile so the download context menu opens (not the list/page menu "Tạo bộ sưu tập" / "Dán").
   const videoEl = tile.locator('video[src*="getMediaUrlRedirect"]').first()
   await videoEl.evaluate((el: HTMLElement) => {
     const rect = el.getBoundingClientRect()
@@ -1157,39 +1294,40 @@ async function openMenuHoverDownloadAndClick1080p(
   await downloadItem.hover()
   await waitStable(page, 200)
 
-  // Resolution submenu that actually contains 1080p. Use .last() so we interact with the
-  // most recently opened menu (portalled menus can render at top-right; stale menus may
-  // remain in DOM), ensuring we click 1080p for the tile we just right-clicked.
   const resolutionMenu = page
     .locator('[data-radix-menu-content][role="menu"]')
-    .filter({ has: page.locator('button[role="menuitem"]:has(span:text-is("1080p"))') })
+    .filter({ has: page.locator(`button[role="menuitem"]:has(span:text-is("${spanText}"))`) })
     .last()
 
-  // Try once, then if it still isn't visible after ~1s, hover "Tải xuống" again and retry.
   let menuVisible = false
   try {
     await resolutionMenu.waitFor({ state: 'visible', timeout: 1000 })
     menuVisible = true
   } catch {
-    // First hover wasn't enough — mimic manual fix by hovering again.
     await downloadItem.hover()
     await waitStable(page, 300)
     await resolutionMenu.waitFor({ state: 'visible', timeout: 1000 })
     menuVisible = true
   }
 
-  if (!menuVisible) throw new Error('Resolution submenu with 1080p did not appear')
+  if (!menuVisible) throw new Error(`Resolution submenu with ${spanText} did not appear`)
 
-  const btn1080 = resolutionMenu
+  const btn = resolutionMenu
     .locator('button[role="menuitem"]')
-    .filter({ has: page.locator('span:text-is("1080p")') })
+    .filter({ has: page.locator(`span:text-is("${spanText}")`) })
     .first()
 
-  await btn1080.scrollIntoViewIfNeeded()
+  await btn.scrollIntoViewIfNeeded()
   await waitStable(page, 100)
+  await btn.evaluate((el: HTMLButtonElement) => el.click())
+}
 
-  // Always use JS click so 1080p is triggered regardless of menu position or overlapping toasts.
-  await btn1080.evaluate((el: HTMLButtonElement) => el.click())
+/** @deprecated Use openMenuHoverDownloadAndClickResolution with '1080p'. */
+async function openMenuHoverDownloadAndClick1080p(
+  page: Page,
+  tile: ReturnType<Page['locator']>
+): Promise<void> {
+  return openMenuHoverDownloadAndClickResolution(page, tile, '1080p')
 }
 
 /** Tile locator for a completed video by tileId (matches parser output). */
@@ -1198,13 +1336,64 @@ function completedVideoTile(page: Page, tileId: string) {
 }
 
 /**
- * Open a new page in the same context, navigate to one video's edit URL, click 1080p,
+ * Trigger download via context menu (right-click → Tải xuống → resolution). Used for 720p (no upscale).
+ * Returns download promise; caller saves to file.
+ */
+async function triggerContextMenuDownload(
+  page: Page,
+  tileId: string,
+  resolution: Veo3DownloadResolution
+): Promise<{ downloadPromise: Promise<unknown> }> {
+  const tile = completedVideoTile(page, tileId)
+  await tile.waitFor({ state: 'visible', timeout: 10000 })
+  const downloadPromise = page.waitForEvent('download', { timeout: resolution === '720p' ? 30000 : 120000 })
+  await openMenuHoverDownloadAndClickResolution(page, tile, resolution)
+  return { downloadPromise }
+}
+
+/**
+ * Batch trigger downloads via context menu (720p only). Sequential; no edit page.
+ */
+async function batchTriggerContextMenuDownloads(
+  page: Page,
+  items: Array<{ tileId: string; outputPath: string; outputFileName: string; workflowKey: string; editUrl: string }>,
+  resolution: Veo3DownloadResolution
+): Promise<{ downloadPromises: Promise<unknown>[]; successfulItems: typeof items }> {
+  const downloadPromises: Promise<unknown>[] = []
+  const successfulItems: Array<{ tileId: string; outputPath: string; outputFileName: string; workflowKey: string; editUrl: string }> = []
+  if (items.length === 0) return { downloadPromises, successfulItems }
+  stepLog(`Batch context-menu ${resolution}: ${items.length} download(s) (no upscale)`)
+  const outputDir = path.dirname(items[0].outputPath)
+  if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true })
+  for (let i = 0; i < items.length; i++) {
+    if (isImageImportBusy(page)) {
+      stepLog(`  Stop: image import started`)
+      break
+    }
+    const item = items[i]
+    stepLog(`  Context-menu ${resolution} ${i + 1}/${items.length}: ${item.outputFileName} (tile ${item.tileId})`)
+    try {
+      const { downloadPromise } = await triggerContextMenuDownload(page, item.tileId, resolution)
+      const download = await downloadPromise
+      downloadPromises.push(Promise.resolve(download))
+      successfulItems.push(item)
+    } catch (e) {
+      stepLog(`  Skip ${item.outputFileName}: ${(e as Error).message}`)
+    }
+    if (i < items.length - 1) await page.waitForTimeout(DOWNLOAD_BATCH_CLICK_GAP_MS)
+  }
+  return { downloadPromises, successfulItems }
+}
+
+/**
+ * Open a new page in the same context, navigate to one video's edit URL, click resolution (1080p or 4k),
  * then bring the project tab to front immediately. Keep the edit tab open until the
  * download event is actually triggered, then close it.
  */
-async function openEditPageInNewTabAndTrigger1080p(
+async function openEditPageInNewTabAndTriggerResolution(
   page: Page,
-  editUrl: string
+  editUrl: string,
+  resolution: '1080p' | '4k'
 ): Promise<{ downloadPromise: Promise<unknown> }> {
   stepLog(`  Open edit tab: ${editUrl}`)
   const editPage = await page.context().newPage()
@@ -1239,7 +1428,8 @@ async function openEditPageInNewTabAndTrigger1080p(
       }
       await waitStable(editPage, 150)
 
-      const btn1080 = editPage.locator(S.editPage1080p).first()
+      const resolutionSelector = resolution === '4k' ? S.editPage4k : S.editPage1080p
+      const btn1080 = editPage.locator(resolutionSelector).first()
       try {
         await bringProjectPageToFront(editPage, { bypassLock: true })
         await btn1080.waitFor({ state: 'visible', timeout: 8000 })
@@ -1257,7 +1447,7 @@ async function openEditPageInNewTabAndTrigger1080p(
         // Fallback JS click for flaky overlay cases.
         await btn1080.evaluate((el: HTMLButtonElement) => el.click())
       }
-      stepLog('  Clicked 1080p on edit tab')
+      stepLog(`  Clicked ${resolution} on edit tab`)
       // Return focus to project right after click while still in critical section.
       await bringProjectPageToFront(page, { bypassLock: true })
       stepLog('  Brought project tab to front')
@@ -1298,17 +1488,18 @@ async function openEditPageInNewTabAndTrigger1080p(
 async function batchTrigger1080pDownloads(
   page: Page,
   items: Array<{ tileId: string; outputPath: string; outputFileName: string; workflowKey: string; editUrl: string }>,
-  opts?: { unordered?: boolean }
+  opts?: { unordered?: boolean; resolution?: '1080p' | '4k' }
 ): Promise<{ downloadPromises: Promise<unknown>[]; successfulItems: typeof items }> {
   const downloadPromises: Promise<unknown>[] = []
   const successfulItems: Array<{ tileId: string; outputPath: string; outputFileName: string; workflowKey: string; editUrl: string }> = []
   if (items.length === 0) return { downloadPromises, successfulItems }
 
   const unordered = opts?.unordered === true
+  const resolution: '1080p' | '4k' = opts?.resolution ?? '1080p'
   stepLog(
     unordered
-      ? `Batch 1080p (unordered/fast): trigger ${items.length} in quick succession, save in completion order`
-      : `Batch 1080p: trigger ${items.length} download(s), wait for each download to start before next`
+      ? `Batch ${resolution} (unordered/fast): trigger ${items.length} in quick succession, save in completion order`
+      : `Batch ${resolution}: trigger ${items.length} download(s), wait for each download to start before next`
   )
   const outputDir = path.dirname(items[0].outputPath)
   if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true })
@@ -1316,8 +1507,8 @@ async function batchTrigger1080pDownloads(
   if (unordered) {
     // Unordered/fast: trigger all in parallel, each in its own tab, downloads resolve in completion order.
     const promises = items.map(async (item, idx) => {
-      stepLog(`  Trigger 1080p (new tab) ${idx + 1}/${items.length}: ${item.outputFileName}`)
-      const { downloadPromise } = await openEditPageInNewTabAndTrigger1080p(page, item.editUrl)
+      stepLog(`  Trigger ${resolution} (new tab) ${idx + 1}/${items.length}: ${item.outputFileName}`)
+      const { downloadPromise } = await openEditPageInNewTabAndTriggerResolution(page, item.editUrl, resolution)
       return await downloadPromise
     })
     for (let i = 0; i < items.length; i++) {
@@ -1326,9 +1517,9 @@ async function batchTrigger1080pDownloads(
     }
   } else {
     if (ORDERED_TWO_PASS_DOWNLOAD) {
-      stepLog(`Batch 1080p two-pass: warm-up then final save (${items.length} item(s))`)
+      stepLog(`Batch ${resolution} two-pass: warm-up then final save (${items.length} item(s))`)
       const warmTasks: Promise<{ ok: boolean; item: typeof items[number] }>[] = []
-      // Pass 1: sequentially trigger 1080p per tab, but do not wait each warm download to finish.
+      // Pass 1: sequentially trigger resolution per tab, but do not wait each warm download to finish.
       // This opens many tabs quickly while preserving ordered click actions.
       for (let i = 0; i < items.length; i++) {
         if (isImageImportBusy(page)) {
@@ -1336,9 +1527,9 @@ async function batchTrigger1080pDownloads(
           break
         }
         const item = items[i]
-        stepLog(`  [WARM] Trigger 1080p ${i + 1}/${items.length}: ${item.outputFileName}`)
+        stepLog(`  [WARM] Trigger ${resolution} ${i + 1}/${items.length}: ${item.outputFileName}`)
         try {
-          const { downloadPromise } = await openEditPageInNewTabAndTrigger1080p(page, item.editUrl)
+          const { downloadPromise } = await openEditPageInNewTabAndTriggerResolution(page, item.editUrl, resolution)
           stepLog(`  [WARM] Armed warm-up watcher: ${item.outputFileName}`)
           const task = downloadPromise
             .then(async (warmDownload) => {
@@ -1364,16 +1555,16 @@ async function batchTrigger1080pDownloads(
       }
       stepLog(`  [WARM] Warmed ${warmedItems.length}/${items.length} item(s); start FINAL pass`)
 
-      // Pass 2: click 1080p again, keep this download for actual save.
+      // Pass 2: click resolution again, keep this download for actual save.
       for (let i = 0; i < warmedItems.length; i++) {
         if (isImageImportBusy(page)) {
           stepLog('  [FINAL] Stop opening new upscale tabs: image import started')
           break
         }
         const item = warmedItems[i]
-        stepLog(`  [FINAL] Trigger 1080p ${i + 1}/${warmedItems.length}: ${item.outputFileName}`)
+        stepLog(`  [FINAL] Trigger ${resolution} ${i + 1}/${warmedItems.length}: ${item.outputFileName}`)
         try {
-          const { downloadPromise } = await openEditPageInNewTabAndTrigger1080p(page, item.editUrl)
+          const { downloadPromise } = await openEditPageInNewTabAndTriggerResolution(page, item.editUrl, resolution)
           stepLog(`  [FINAL] Waiting download event: ${item.outputFileName}`)
           const finalDownload = await downloadPromise
           downloadPromises.push(Promise.resolve(finalDownload))
@@ -1392,9 +1583,9 @@ async function batchTrigger1080pDownloads(
         break
       }
       const item = items[i]
-      stepLog(`  Click 1080p (new tab) ${i + 1}/${items.length}: ${item.outputFileName} (tile ${item.tileId})`)
+      stepLog(`  Click ${resolution} (new tab) ${i + 1}/${items.length}: ${item.outputFileName} (tile ${item.tileId})`)
       try {
-        const { downloadPromise } = await openEditPageInNewTabAndTrigger1080p(page, item.editUrl)
+        const { downloadPromise } = await openEditPageInNewTabAndTriggerResolution(page, item.editUrl, resolution)
         // Strictly wait for this download event before triggering the next one.
         // This prevents overlap/misalignment where multiple files can map to wrong slots.
         const download = await downloadPromise
@@ -1537,7 +1728,7 @@ export async function flowWaitAndDownloadAllGeneratedVideos1080p(
     const outputPath = path.join(outputDir, fileName)
     const tileIndex = count - 1 - i
     try {
-      await flowDownloadGeneratedVideo1080pAtTile(page, tileIndex, outputPath)
+      await flowDownloadGeneratedVideoAtTile(page, tileIndex, outputPath, '1080p')
       saved.push(outputPath)
     } catch (e) {
       stepLog(`Download ${fileName} (tile ${tileIndex}) failed: ${(e as Error).message}`)
@@ -1576,9 +1767,10 @@ export async function flowWaitAndDownloadAllGeneratedVideos1080pUsingParser(
   page: Page,
   outputDir: string,
   expectedCount: number,
-  opts: { timeoutMs?: number; onProgress?: (completedCount: number) => void; actionQueue?: ActionQueue; unordered?: boolean } = {}
+  opts: { timeoutMs?: number; onProgress?: (completedCount: number) => void; actionQueue?: ActionQueue; unordered?: boolean; downloadResolution?: Veo3DownloadResolution } = {}
 ): Promise<string[]> {
   const unordered = opts.unordered === true
+  const resolution: Veo3DownloadResolution = opts.downloadResolution ?? '1080p'
   const timeoutMs = opts.timeoutMs ?? GENERATED_VIDEO_DEADLINE_MS
   const deadline = Date.now() + timeoutMs
   const pollIntervalMs = 1500
@@ -1729,7 +1921,9 @@ export async function flowWaitAndDownloadAllGeneratedVideos1080pUsingParser(
             }
           }).filter(i => i.editUrl.length > 0)
           try {
-            const result = await batchTrigger1080pDownloads(page, items, { unordered })
+            const result = resolution === '720p'
+              ? await batchTriggerContextMenuDownloads(page, items, resolution)
+              : await batchTrigger1080pDownloads(page, items, { unordered, resolution: resolution as '1080p' | '4k' })
             pendingDownloadPromises = result.downloadPromises
             pendingSuccessfulItems = result.successfulItems
           } catch (e) {
@@ -1890,12 +2084,7 @@ function logFinalSlotStatus(
     const videoSlots = tiles.filter(t => t.type !== 'image')
     const inPromptOrder = videoSlots.slice().reverse()
     for (const t of inPromptOrder) {
-      const name =
-        t.type === 'image'
-          ? t.outputFileName
-          : t.type === 'video' || t.type === 'failed' || t.type === 'generating'
-            ? t.outputFileName
-            : ''
+      const name = (t.type === 'video' || t.type === 'failed' || t.type === 'generating') ? t.outputFileName : ''
       if (!name) continue
       const workflow = t.workflowId ?? 'unknown'
       let status: string
@@ -1971,7 +2160,7 @@ export async function runVeo3ProjectFlowByGroups(
   page: Page,
   groups: Veo3FlowGroup[],
   opts: Veo3FlowOptions & { delayMinMs?: number; delayMaxMs?: number } = {},
-  downloadOpts?: { outputDir: string; expectedCount: number; timeoutMs?: number; onProgress?: (completedCount: number) => void; unordered?: boolean }
+  downloadOpts?: { outputDir: string; expectedCount: number; timeoutMs?: number; onProgress?: (completedCount: number) => void; unordered?: boolean; downloadResolution?: Veo3DownloadResolution }
 ): Promise<string[]> {
   resetVeo3TraceLogs()
   const mode = opts.videoMode ?? 'frames'
@@ -1979,12 +2168,21 @@ export async function runVeo3ProjectFlowByGroups(
   const delayMaxMs = opts.delayMaxMs ?? DELAY_MAX_MS
   stepLog('Veo3 project flow by groups: upload per group, random 15-19s between prompts')
   await flowClickNewProject(page)
-  await flowSetVideoMode(page, {
-    videoMode: mode,
-    landscape: opts.landscape ?? false,
-    multiplier: opts.multiplier ?? 2,
-    ...opts,
-  })
+  const isImage = opts.generationMode === 'image'
+  if (isImage) {
+    await flowSetImageMode(page, {
+      aspect: opts.landscape ? '16:9' : '9:16',
+      multiplier: (opts.multiplier ?? 1) as 1 | 2 | 3 | 4,
+      model: opts.imageModel ?? 'Nano Banana Pro',
+    })
+  } else {
+    await flowSetVideoMode(page, {
+      videoMode: mode,
+      landscape: opts.landscape ?? false,
+      multiplier: opts.multiplier ?? 2,
+      ...opts,
+    })
+  }
 
   let downloadPromise: Promise<string[]> | null = null
   if (downloadOpts) {
@@ -1997,6 +2195,7 @@ export async function runVeo3ProjectFlowByGroups(
         timeoutMs: downloadOpts.timeoutMs,
         onProgress: downloadOpts.onProgress,
         unordered: downloadOpts.unordered,
+        downloadResolution: downloadOpts.downloadResolution ?? opts.downloadResolution ?? '1080p',
       }
     )
   }

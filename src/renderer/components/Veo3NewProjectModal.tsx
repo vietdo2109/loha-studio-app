@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import type { Veo3Project, Veo3VideoMode, Veo3Multiplier, Veo3AiModel, Script } from '../types'
+import type { Veo3Project, Veo3VideoMode, Veo3Multiplier, Veo3AiModel, Veo3ImageModel, Veo3DownloadResolution, Veo3ImageDownloadResolution, Veo3GenerationMode, Script } from '../types'
 import { Modal, ModalRow, ModalLabel, Btn, Input, Checkbox } from './ui'
 import { Icon } from './icons'
 
@@ -14,13 +14,22 @@ export function Veo3NewProjectModal({ onClose, onSave, initial, scripts = [] }: 
     { value: 'veo-3.1-fast-lower-priority', label: 'Veo 3.1 - Fast [Lower Priority]' },
     { value: 'veo-3.1-quality', label: 'Veo 3.1 - Quality' },
   ]
+  const IMAGE_MODEL_OPTIONS: Array<{ value: Veo3ImageModel; label: string }> = [
+    { value: 'Nano Banana Pro', label: '🍌 Nano Banana Pro' },
+    { value: 'Nano Banana 2', label: '🍌 Nano Banana 2' },
+    { value: 'Imagen 4', label: 'Imagen 4' },
+  ]
   const isEdit = !!initial
   const [name,       setName]       = useState(initial?.name ?? "")
   const [outputDir,  setOutputDir]  = useState(initial?.outputDir ?? "")
   const [aiModel,    setAiModel]    = useState<Veo3AiModel>(initial?.aiModel ?? 'veo-3.1-fast')
+  const [generationMode, setGenerationMode] = useState<Veo3GenerationMode>(initial?.generationMode ?? 'video')
   const [videoMode,  setVideoMode]  = useState<Veo3VideoMode>(initial?.videoMode ?? "frames")
   const [landscape,  setLandscape]  = useState(initial?.landscape ?? false)
   const [multiplier, setMultiplier] = useState<Veo3Multiplier>(initial?.multiplier ?? 2)
+  const [downloadResolution, setDownloadResolution] = useState<Veo3DownloadResolution>(initial?.downloadResolution ?? '1080p')
+  const [imageDownloadResolution, setImageDownloadResolution] = useState<Veo3ImageDownloadResolution>(initial?.imageDownloadResolution ?? '2k')
+  const [imageModel, setImageModel] = useState<Veo3ImageModel>(initial?.imageModel ?? 'Nano Banana Pro')
   const [promptText, setPromptText] = useState(initial && !initial.useScripts ? initial.prompts.join("\n\n") : "")
   const [startFramesDir, setStartFramesDir] = useState(initial?.startFramesDir ?? initial?.imageDir ?? "")
   const [useScripts, setUseScripts] = useState(!!(initial?.useScripts && initial?.scriptIds?.length))
@@ -31,9 +40,12 @@ export function Veo3NewProjectModal({ onClose, onSave, initial, scripts = [] }: 
       setName(initial.name)
       setOutputDir(initial.outputDir)
       setAiModel(initial.aiModel ?? 'veo-3.1-fast')
+      setGenerationMode(initial.generationMode ?? 'video')
       setVideoMode(initial.videoMode)
       setLandscape(initial.landscape)
       setMultiplier(initial.multiplier)
+      setDownloadResolution(initial.downloadResolution ?? '1080p')
+      setImageDownloadResolution(initial.imageDownloadResolution ?? '2k')
       setStartFramesDir(initial.startFramesDir ?? initial.imageDir ?? "")
       setUseScripts(!!(initial.useScripts && initial.scriptIds?.length))
       setSelectedScriptIds(new Set(initial.scriptIds?.length ? [initial.scriptIds[0]] : []))
@@ -70,9 +82,13 @@ export function Veo3NewProjectModal({ onClose, onSave, initial, scripts = [] }: 
       name: name.trim(),
       outputDir,
       aiModel,
+      generationMode,
       videoMode,
       landscape,
       multiplier,
+      downloadResolution,
+      imageDownloadResolution: generationMode === 'image' ? imageDownloadResolution : undefined,
+      imageModel: generationMode === 'image' ? imageModel : undefined,
       prompts,
       startFramesDir: startFramesDir || undefined,
       endFramesDir: undefined,
@@ -110,6 +126,40 @@ export function Veo3NewProjectModal({ onClose, onSave, initial, scripts = [] }: 
       </ModalRow>
 
       <ModalRow>
+        <ModalLabel>Flow</ModalLabel>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button
+            type="button"
+            onClick={() => setGenerationMode("video")}
+            style={{
+              padding: "8px 14px", borderRadius: "var(--radius)", fontSize: 12, fontWeight: 500,
+              border: `1.5px solid ${generationMode === "video" ? "var(--accent)" : "var(--border)"}`,
+              background: generationMode === "video" ? "var(--accent-bg)" : "var(--bg)",
+              color: generationMode === "video" ? "var(--accent)" : "var(--text2)",
+            }}
+          >
+            Video
+          </button>
+          <button
+            type="button"
+            disabled={true}
+            onClick={() => setGenerationMode("image")}
+            style={{
+              padding: "8px 14px", borderRadius: "var(--radius)", fontSize: 12, fontWeight: 500,
+              border: `1.5px solid ${generationMode === "image" ? "var(--accent)" : "var(--border)"}`,
+              background: generationMode === "image" ? "var(--accent-bg)" : "var(--bg)",
+              color: generationMode === "image" ? "var(--accent)" : "var(--text2)",
+              opacity: 0.5,
+              cursor: "not-allowed",
+            }}
+          >
+            Thay sản phẩm vào mẫu
+          </button>
+        </div>
+      </ModalRow>
+
+      {generationMode === "video" && (
+      <ModalRow>
         <ModalLabel>Chế độ video (Flow)</ModalLabel>
         <div style={{ display: "flex", gap: 8 }}>
           <button
@@ -138,25 +188,42 @@ export function Veo3NewProjectModal({ onClose, onSave, initial, scripts = [] }: 
           </button>
         </div>
       </ModalRow>
+      )}
 
       <ModalRow>
         <ModalLabel>AI Model</ModalLabel>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          {MODEL_OPTIONS.map((opt) => (
-            <button
-              key={opt.value}
-              type="button"
-              onClick={() => setAiModel(opt.value)}
-              style={{
-                padding: "8px 14px", borderRadius: "var(--radius)", fontSize: 12, fontWeight: 500,
-                border: `1.5px solid ${aiModel === opt.value ? "var(--accent)" : "var(--border)"}`,
-                background: aiModel === opt.value ? "var(--accent-bg)" : "var(--bg)",
-                color: aiModel === opt.value ? "var(--accent)" : "var(--text2)",
-              }}
-            >
-              {opt.label}
-            </button>
-          ))}
+          {generationMode === "image"
+            ? IMAGE_MODEL_OPTIONS.map((opt) => (
+                <button
+                  key={opt.value}
+                  type="button"
+                  onClick={() => setImageModel(opt.value)}
+                  style={{
+                    padding: "8px 14px", borderRadius: "var(--radius)", fontSize: 12, fontWeight: 500,
+                    border: `1.5px solid ${imageModel === opt.value ? "var(--accent)" : "var(--border)"}`,
+                    background: imageModel === opt.value ? "var(--accent-bg)" : "var(--bg)",
+                    color: imageModel === opt.value ? "var(--accent)" : "var(--text2)",
+                  }}
+                >
+                  {opt.label}
+                </button>
+              ))
+            : MODEL_OPTIONS.map((opt) => (
+                <button
+                  key={opt.value}
+                  type="button"
+                  onClick={() => setAiModel(opt.value)}
+                  style={{
+                    padding: "8px 14px", borderRadius: "var(--radius)", fontSize: 12, fontWeight: 500,
+                    border: `1.5px solid ${aiModel === opt.value ? "var(--accent)" : "var(--border)"}`,
+                    background: aiModel === opt.value ? "var(--accent-bg)" : "var(--bg)",
+                    color: aiModel === opt.value ? "var(--accent)" : "var(--text2)",
+                  }}
+                >
+                  {opt.label}
+                </button>
+              ))}
         </div>
       </ModalRow>
 
@@ -191,6 +258,42 @@ export function Veo3NewProjectModal({ onClose, onSave, initial, scripts = [] }: 
           </div>
         </div>
         <div>
+          <ModalLabel>Độ phân giải tải</ModalLabel>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            {generationMode === "image"
+              ? (['1k', '2k', '4k'] as const).map((r) => (
+                  <button
+                    key={r}
+                    type="button"
+                    onClick={() => setImageDownloadResolution(r)}
+                    style={{
+                      padding: "6px 12px", borderRadius: "var(--radius)", fontSize: 12,
+                      border: `1.5px solid ${imageDownloadResolution === r ? "var(--accent)" : "var(--border)"}`,
+                      background: imageDownloadResolution === r ? "var(--accent-bg)" : "var(--bg)",
+                      color: imageDownloadResolution === r ? "var(--accent)" : "var(--text2)",
+                    }}
+                  >
+                    {r}
+                  </button>
+                ))
+              : (['720p', '1080p', '4k'] as const).map((r) => (
+                  <button
+                    key={r}
+                    type="button"
+                    onClick={() => setDownloadResolution(r)}
+                    style={{
+                      padding: "6px 12px", borderRadius: "var(--radius)", fontSize: 12,
+                      border: `1.5px solid ${downloadResolution === r ? "var(--accent)" : "var(--border)"}`,
+                      background: downloadResolution === r ? "var(--accent-bg)" : "var(--bg)",
+                      color: downloadResolution === r ? "var(--accent)" : "var(--text2)",
+                    }}
+                  >
+                    {r === '720p' ? '720p' : r}
+                  </button>
+                ))}
+          </div>
+        </div>
+        <div>
           <ModalLabel>Số lượng (×)</ModalLabel>
           <div style={{ display: "flex", gap: 4 }}>
             {([1, 2, 3, 4] as const).map((n) => (
@@ -213,14 +316,18 @@ export function Veo3NewProjectModal({ onClose, onSave, initial, scripts = [] }: 
       </div>
 
       <ModalRow>
-        <ModalLabel>Thư mục ảnh đầu (start frame). 1.png, 2.png... theo thứ tự kịch bản hoặc prompt bên dưới</ModalLabel>
+        <ModalLabel>
+          {generationMode === "image"
+            ? "Thư mục ảnh — ảnh mẫu phải được đặt tên là sample.png hoặc sample.jpg"
+            : "Thư mục ảnh đầu (start frame). 1.png, 2.png... theo thứ tự kịch bản hoặc prompt bên dưới"}
+        </ModalLabel>
         <div style={{ display: "flex", gap: 8 }}>
           <Input value={startFramesDir} onChange={setStartFramesDir} placeholder="Chọn thư mục..." style={{ flex: 1 }}/>
           <Btn onClick={handlePickStartFrames}><Icon.Folder /> Chọn</Btn>
         </div>
         {startFramesDir && (
           <div style={{ marginTop: 5, fontSize: 11, color: "var(--text3)", fontFamily: "var(--mono)" }}>
-            → 1.png, 2.png... trong thư mục này
+            → {generationMode === "image" ? "sample.png hoặc sample.jpg" : "1.png, 2.png... trong thư mục này"}
           </div>
         )}
       </ModalRow>

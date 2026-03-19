@@ -22,6 +22,8 @@ export const VEO3_SELECTORS = {
   // Settings menu (settings_menu.html) — Image / Video tabs
   settingsMenuVideoTab: 'button[role="tab"]:has-text("Video")',
   settingsMenuImageTab: 'button[role="tab"]:has-text("Image")',
+  /** Image tab (Vietnamese locale). */
+  settingsMenuImageTabHinhAnh: 'button[role="tab"]:has-text("Hình ảnh")',
   // Aspect: 16:9 (landscape) / 9:16 (portrait) — UI may also use "Ngang"/"Dọc"
   settingsMenuLandscape: 'button[role="tab"]:has-text("16:9")',
   settingsMenuPortrait: 'button[role="tab"]:has-text("9:16")',
@@ -87,8 +89,16 @@ export const VEO3_SELECTORS = {
 
   // ─── Context menu on generated video (generated_content_download_menu.html): Tải xuống → submenu → 1080p ─
   contextMenuDownload: '[role="menu"] [role="menuitem"]:has-text("Tải xuống"), [role="menu"] div:has-text("Tải xuống")',
+  /** 720p (Original Size) — tải ngay, không upscale. */
+  contextMenuDownload720p: '[role="menu"]:has(button:has(span:text-is("270p"))) button[role="menuitem"]:has(span:text-is("720p"))',
   /** 1080p in the download submenu. Prefer submenu that has 270p; fallback to any visible menuitem with 1080p. */
   contextMenuDownload1080p: '[role="menu"]:has(button:has(span:text-is("270p"))) button[role="menuitem"]:has(span:text-is("1080p"))',
+  /** 4K (Upscaled). */
+  contextMenuDownload4k: '[role="menu"]:has(button:has(span:text-is("270p"))) button[role="menuitem"]:has(span:text-is("4K"))',
+  /** Image mode download resolution: 1k, 2k, 4k (different from video). */
+  contextMenuDownload1k: '[role="menu"] button[role="menuitem"]:has(span:text-is("1k")), [role="menu"] button[role="menuitem"]:has(span:text-is("1K"))',
+  contextMenuDownload2k: '[role="menu"] button[role="menuitem"]:has(span:text-is("2k")), [role="menu"] button[role="menuitem"]:has(span:text-is("2K"))',
+  contextMenuDownloadImage4k: '[role="menu"] button[role="menuitem"]:has(span:text-is("4k")), [role="menu"] button[role="menuitem"]:has(span:text-is("4K"))',
   /** Fallback: any visible menuitem with span "1080p" (when submenu parent selector fails). */
   contextMenuDownload1080pFallback: 'button[role="menuitem"]:has(span:text-is("1080p"))',
   /** Fallback: menuitem containing text 1080p (for different DOM). */
@@ -99,8 +109,10 @@ export const VEO3_SELECTORS = {
   tileEditLink: 'a[href*="/edit/"]',
   /** Edit page: Download button (opens resolution menu). */
   editPageDownloadBtn: 'button[aria-haspopup="menu"]:has(div:text-is("Tải xuống"))',
-  /** Edit page: 1080p option in the resolution dropdown. */
+  /** Edit page: resolution options in the dropdown. */
+  editPage720p: '[data-radix-menu-content][role="menu"] button[role="menuitem"]:has(span:text-is("720p"))',
   editPage1080p: '[data-radix-menu-content][role="menu"] button[role="menuitem"]:has(span:text-is("1080p")), button[role="menuitem"]:has(span:text-is("1080p"))',
+  editPage4k: '[data-radix-menu-content][role="menu"] button[role="menuitem"]:has(span:text-is("4K"))',
 } as const
 
 export const VEO3_FLOW_BASE = 'https://labs.google/fx/vi/tools/flow'

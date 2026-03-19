@@ -7,11 +7,13 @@ export function Veo3QueueProjectRow({ qp, onToggle, onJobClick }: {
   onToggle: () => void
   onJobClick?: (qp: Veo3QueueProject, job: Veo3QueueJob) => void
 }) {
-  const modelLabel = qp.aiModel === 'veo-3.1-quality'
-    ? '3.1 Quality'
-    : qp.aiModel === 'veo-3.1-fast-lower-priority'
-      ? '3.1 Fast LP'
-      : '3.1 Fast'
+  const modelLabel = qp.generationMode === 'image'
+    ? (qp.imageModel ?? 'Nano Banana Pro')
+    : qp.aiModel === 'veo-3.1-quality'
+      ? '3.1 Quality'
+      : qp.aiModel === 'veo-3.1-fast-lower-priority'
+        ? '3.1 Fast LP'
+        : '3.1 Fast'
   const total   = qp.jobs.length
   const done    = qp.jobs.filter(j => j.status === "done").length
   const running = qp.jobs.filter(j => j.status === "running").length
