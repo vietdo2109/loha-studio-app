@@ -3,7 +3,7 @@
  * Uses veo3Selectors; call from a Flow page (after login).
  */
 
-import { Page } from 'patchright'
+import { Page, Request, Response } from 'patchright'
 import * as path from 'path'
 import * as fs from 'fs'
 import { VEO3_SELECTORS as S, VEO3_FLOW_BASE, VEO3_PROJECT_URL_PATTERN, VEO3_EDIT_PAGE_URL_PATTERN } from './veo3Selectors'
@@ -586,7 +586,7 @@ export async function flowUploadImages(page: Page, imagePaths: string[], mode: V
       return num - 1
     }
 
-    const onRequest = (req: { url: () => string; method: () => string; postData: () => string | undefined }) => {
+    const onRequest = (req: Request) => {
     const url = req.url()
     const method = req.method()
     if (!uploadUrlPattern.test(url)) return
@@ -607,9 +607,9 @@ export async function flowUploadImages(page: Page, imagePaths: string[], mode: V
     })
     requestToEntryIndex.set(req as object, idx)
   }
-    const onResponse = async (res: { url: () => string; status: () => number; request: () => object; json: () => Promise<unknown> }) => {
+    const onResponse = async (res: Response) => {
     if (!uploadPostPattern.test(res.url())) return
-    const idx = requestToEntryIndex.get(res.request())
+    const idx = requestToEntryIndex.get(res.request() as object)
     if (idx == null) return
     try {
       const body = await res.json()
@@ -1165,7 +1165,21 @@ export async function clickRetryOnFirstFailedTile(page: Page): Promise<boolean> 
 
 /** Click retry on the failed tile with the given tileId (from parser). Use when parser reports data.failed so we retry the exact tile. Returns false if tile not found or click times out. */
 export async function clickRetryOnFailedTileByTileId(page: Page, tileId: string): Promise<boolean> {
-  const tile = page.locator(`[data-tile-id="${tileId}"]:has(div.sc-9a984650-1.dEfdsQ)`).first()
+  // Primary: any failed layout with generation retry (refresh). Fallback: known title/copy if button shape changes.
+  const tile = page
+    .locator(
+      `[data-tile-id="${tileId}"]:has(button:has(i:text-is("refresh"))):not(:has(video[src*="getMediaUrlRedirect"])), ` +
+        `[data-tile-id="${tileId}"]:has(button[aria-label*="Try again" i]):not(:has(video[src*="getMediaUrlRedirect"])), ` +
+        `[data-tile-id="${tileId}"]:has(button[aria-label*="Thử lại"]):not(:has(video[src*="getMediaUrlRedirect"])), ` +
+        `[data-tile-id="${tileId}"]:has(button:has-text("Try again")):not(:has(video[src*="getMediaUrlRedirect"])), ` +
+        `[data-tile-id="${tileId}"]:has(div.sc-9a984650-1.dEfdsQ), ` +
+        `[data-tile-id="${tileId}"]:has(div.sc-25d34a31-1), ` +
+        `[data-tile-id="${tileId}"]:has-text("Không thành công"), ` +
+        `[data-tile-id="${tileId}"]:has-text("Something went wrong"), ` +
+        `[data-tile-id="${tileId}"]:has-text("chính sách"), ` +
+        `[data-tile-id="${tileId}"]:has-text("vi phạm")`
+    )
+    .first()
   const visible = await tile.isVisible().catch(() => false)
   if (!visible) return false
   const retryBtn = tile.locator(S.generatedFailedRetryBtn).first()
@@ -1200,31 +1214,36 @@ export async function waitForGeneratedVideosCount(
   return lastCount
 }
 
-/** Right-click tile at tileIndex (0 = leftmost = N.mp4), open Tải xuống, click resolution in submenu, then save to outputPath.
- * 720p = tải ngay (không upscale). 1080p/4k = upscale rồi tải. */
+/** Download tile at tileIndex via edit page (new tab → Tải xuống → 720p/1080p/4k). Avoids context menu on project page (breaks upload dialog). */
 export async function flowDownloadGeneratedVideoAtTile(
   page: Page,
   tileIndex: number,
   outputPath: string,
   resolution: Veo3DownloadResolution = '1080p'
 ): Promise<void> {
-  stepLog(`Download tile ${tileIndex + 1} as ${resolution} to ${outputPath}`)
+  stepLog(`Download tile ${tileIndex + 1} as ${resolution} to ${outputPath} (edit tab)`)
   const tile = page.locator(S.generatedCompletedVideoTile).nth(tileIndex)
   await tile.waitFor({ state: 'visible', timeout: 10000 })
+  await tile.scrollIntoViewIfNeeded()
+  await waitStable(page, 150)
+  await page.keyboard.press('Escape')
+  await waitStable(page, 150)
+  const editUrl = await resolveEditUrlFromTile(page, tile)
+  if (!editUrl) throw new Error(`No edit link on tile ${tileIndex + 1}`)
   const dir = path.dirname(outputPath)
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
-  const downloadPromise = page.waitForEvent('download', { timeout: resolution === '720p' ? 30000 : 120000 })
-  await openMenuHoverDownloadAndClickResolution(page, tile, resolution)
+  const res = resolution === '4k' ? '4k' : resolution === '720p' ? '720p' : '1080p'
+  const { downloadPromise } = await openEditPageInNewTabAndTriggerResolution(page, editUrl, res)
   const download = await downloadPromise
-  const tmpPath = await download.path()
+  const tmpPath = await (download as { path(): Promise<string | null> }).path()
   if (tmpPath && fs.existsSync(tmpPath)) {
     const buf = fs.readFileSync(tmpPath)
-    await download.delete().catch(() => {})
+    await (download as { delete(): Promise<void> }).delete().catch(() => {})
     if (buf.length < 1000 || buf[0] === 0x3c) throw new Error(`Downloaded file too small or not video (${buf.length} bytes, first byte 0x${buf[0]?.toString(16) ?? '?'})`)
     fs.writeFileSync(outputPath, buf)
     stepLog(`Saved ${outputPath} (${(buf.length / 1024 / 1024).toFixed(2)} MB)`)
   } else {
-    await download.saveAs(outputPath)
+    await (download as { saveAs(p: string): Promise<void> }).saveAs(outputPath)
     stepLog(`Saved ${outputPath}`)
   }
   await waitStable(page, 150)
@@ -1336,64 +1355,28 @@ function completedVideoTile(page: Page, tileId: string) {
 }
 
 /**
- * Trigger download via context menu (right-click → Tải xuống → resolution). Used for 720p (no upscale).
- * Returns download promise; caller saves to file.
- */
-async function triggerContextMenuDownload(
-  page: Page,
-  tileId: string,
-  resolution: Veo3DownloadResolution
-): Promise<{ downloadPromise: Promise<unknown> }> {
-  const tile = completedVideoTile(page, tileId)
-  await tile.waitFor({ state: 'visible', timeout: 10000 })
-  const downloadPromise = page.waitForEvent('download', { timeout: resolution === '720p' ? 30000 : 120000 })
-  await openMenuHoverDownloadAndClickResolution(page, tile, resolution)
-  return { downloadPromise }
-}
-
-/**
- * Batch trigger downloads via context menu (720p only). Sequential; no edit page.
- */
-async function batchTriggerContextMenuDownloads(
-  page: Page,
-  items: Array<{ tileId: string; outputPath: string; outputFileName: string; workflowKey: string; editUrl: string }>,
-  resolution: Veo3DownloadResolution
-): Promise<{ downloadPromises: Promise<unknown>[]; successfulItems: typeof items }> {
-  const downloadPromises: Promise<unknown>[] = []
-  const successfulItems: Array<{ tileId: string; outputPath: string; outputFileName: string; workflowKey: string; editUrl: string }> = []
-  if (items.length === 0) return { downloadPromises, successfulItems }
-  stepLog(`Batch context-menu ${resolution}: ${items.length} download(s) (no upscale)`)
-  const outputDir = path.dirname(items[0].outputPath)
-  if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true })
-  for (let i = 0; i < items.length; i++) {
-    if (isImageImportBusy(page)) {
-      stepLog(`  Stop: image import started`)
-      break
-    }
-    const item = items[i]
-    stepLog(`  Context-menu ${resolution} ${i + 1}/${items.length}: ${item.outputFileName} (tile ${item.tileId})`)
-    try {
-      const { downloadPromise } = await triggerContextMenuDownload(page, item.tileId, resolution)
-      const download = await downloadPromise
-      downloadPromises.push(Promise.resolve(download))
-      successfulItems.push(item)
-    } catch (e) {
-      stepLog(`  Skip ${item.outputFileName}: ${(e as Error).message}`)
-    }
-    if (i < items.length - 1) await page.waitForTimeout(DOWNLOAD_BATCH_CLICK_GAP_MS)
-  }
-  return { downloadPromises, successfulItems }
-}
-
-/**
- * Open a new page in the same context, navigate to one video's edit URL, click resolution (1080p or 4k),
+ * Open a new page in the same context, navigate to one video's edit URL, click resolution (720p, 1080p, or 4k),
  * then bring the project tab to front immediately. Keep the edit tab open until the
  * download event is actually triggered, then close it.
  */
+/** Resolve absolute edit URL from a completed video tile (a[href*="/edit/"]). */
+async function resolveEditUrlFromTile(page: Page, tile: ReturnType<Page['locator']>): Promise<string | null> {
+  const link = tile.locator(S.tileEditLink).first()
+  const href = await link.getAttribute('href').catch(() => null)
+  if (!href || !href.includes('/edit/')) return null
+  if (href.startsWith('http')) return href
+  try {
+    const u = new URL(page.url())
+    return new URL(href, `${u.protocol}//${u.host}`).href
+  } catch {
+    return null
+  }
+}
+
 async function openEditPageInNewTabAndTriggerResolution(
   page: Page,
   editUrl: string,
-  resolution: '1080p' | '4k'
+  resolution: '720p' | '1080p' | '4k'
 ): Promise<{ downloadPromise: Promise<unknown> }> {
   stepLog(`  Open edit tab: ${editUrl}`)
   const editPage = await page.context().newPage()
@@ -1428,24 +1411,25 @@ async function openEditPageInNewTabAndTriggerResolution(
       }
       await waitStable(editPage, 150)
 
-      const resolutionSelector = resolution === '4k' ? S.editPage4k : S.editPage1080p
-      const btn1080 = editPage.locator(resolutionSelector).first()
+      const resolutionSelector =
+        resolution === '4k' ? S.editPage4k : resolution === '720p' ? S.editPage720p : S.editPage1080p
+      const resBtn = editPage.locator(resolutionSelector).first()
       try {
         await bringProjectPageToFront(editPage, { bypassLock: true })
-        await btn1080.waitFor({ state: 'visible', timeout: 8000 })
+        await resBtn.waitFor({ state: 'visible', timeout: 8000 })
       } catch {
         // Retry opening resolution menu once (submenu can fail first time).
         await bringProjectPageToFront(editPage, { bypassLock: true })
         await downloadBtn.click().catch(() => null)
         await waitStable(editPage, 250)
-        await btn1080.waitFor({ state: 'visible', timeout: 8000 })
+        await resBtn.waitFor({ state: 'visible', timeout: 8000 })
       }
       try {
         await bringProjectPageToFront(editPage, { bypassLock: true })
-        await btn1080.click()
+        await resBtn.click()
       } catch {
         // Fallback JS click for flaky overlay cases.
-        await btn1080.evaluate((el: HTMLButtonElement) => el.click())
+        await resBtn.evaluate((el: HTMLButtonElement) => el.click())
       }
       stepLog(`  Clicked ${resolution} on edit tab`)
       // Return focus to project right after click while still in critical section.
@@ -1488,14 +1472,16 @@ async function openEditPageInNewTabAndTriggerResolution(
 async function batchTrigger1080pDownloads(
   page: Page,
   items: Array<{ tileId: string; outputPath: string; outputFileName: string; workflowKey: string; editUrl: string }>,
-  opts?: { unordered?: boolean; resolution?: '1080p' | '4k' }
+  opts?: { unordered?: boolean; resolution?: '720p' | '1080p' | '4k' }
 ): Promise<{ downloadPromises: Promise<unknown>[]; successfulItems: typeof items }> {
   const downloadPromises: Promise<unknown>[] = []
   const successfulItems: Array<{ tileId: string; outputPath: string; outputFileName: string; workflowKey: string; editUrl: string }> = []
   if (items.length === 0) return { downloadPromises, successfulItems }
 
   const unordered = opts?.unordered === true
-  const resolution: '1080p' | '4k' = opts?.resolution ?? '1080p'
+  const resolution: '720p' | '1080p' | '4k' = opts?.resolution ?? '1080p'
+  /** 720p has no upscale — skip two-pass warm-up (same as 1080p path but single pass only). */
+  const useTwoPass = ORDERED_TWO_PASS_DOWNLOAD && resolution !== '720p'
   stepLog(
     unordered
       ? `Batch ${resolution} (unordered/fast): trigger ${items.length} in quick succession, save in completion order`
@@ -1516,7 +1502,7 @@ async function batchTrigger1080pDownloads(
       successfulItems.push(items[i])
     }
   } else {
-    if (ORDERED_TWO_PASS_DOWNLOAD) {
+    if (useTwoPass) {
       stepLog(`Batch ${resolution} two-pass: warm-up then final save (${items.length} item(s))`)
       const warmTasks: Promise<{ ok: boolean; item: typeof items[number] }>[] = []
       // Pass 1: sequentially trigger resolution per tab, but do not wait each warm download to finish.
@@ -1864,7 +1850,8 @@ export async function flowWaitAndDownloadAllGeneratedVideos1080pUsingParser(
             err.includes('wait a bit')
           const didRetry = await clickRetryOnFailedTileByTileId(page, f.tileId)
           stepLog(`Failed ${f.outputFileName} (id=${f.tileId})${f.errorMessage ? `: "${f.errorMessage}"` : ''} → retry ${didRetry ? 'clicked' : 'skip'}`)
-          retriedTileIds.add(f.tileId)
+          // Only mark retried after a successful click; otherwise keep retrying next poll (policy / DOM variants).
+          if (didRetry) retriedTileIds.add(f.tileId)
           if (didRetry) {
             if (isRateLimitedFailure) {
               const cooldownMs = RETRY_RATE_LIMIT_BASE_COOLDOWN_MS + Math.floor(Math.random() * (RETRY_RATE_LIMIT_JITTER_MS + 1))
@@ -1921,9 +1908,10 @@ export async function flowWaitAndDownloadAllGeneratedVideos1080pUsingParser(
             }
           }).filter(i => i.editUrl.length > 0)
           try {
-            const result = resolution === '720p'
-              ? await batchTriggerContextMenuDownloads(page, items, resolution)
-              : await batchTrigger1080pDownloads(page, items, { unordered, resolution: resolution as '1080p' | '4k' })
+            const result = await batchTrigger1080pDownloads(page, items, {
+              unordered,
+              resolution: resolution as '720p' | '1080p' | '4k',
+            })
             pendingDownloadPromises = result.downloadPromises
             pendingSuccessfulItems = result.successfulItems
           } catch (e) {
@@ -2013,7 +2001,7 @@ export async function flowWaitAndDownloadAllGeneratedVideos1080pUsingParser(
     // Require at least one download (or expectedCount===0) so we don't exit on a transient "0 slots" DOM state
     // (e.g. list briefly shows only image tiles after a generating placeholder disappears).
     const anyGenerating = data.generating.length > 0
-    const anyFailedWithRetryLeft = data.failed.some(f => f.hasRetry && !retriedTileIds.has(f.tileId))
+    const anyFailedWithRetryLeft = data.failed.some(f => !retriedTileIds.has(f.tileId))
     const anyReadyVideoUndownloaded = data.videos.some(v => {
       const key = workflowKeyForTile(v.workflowId, v.outputFileName)
       return !downloadedWorkflowKeys.has(key) && !permanentUpsampleFailureWorkflowKeys.has(key)

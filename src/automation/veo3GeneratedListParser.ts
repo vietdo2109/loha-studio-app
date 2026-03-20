@@ -6,6 +6,9 @@
  * and a new generating tile appears to the left (that will become 5.mp4 when done).
  *
  * See: src/html_inpects/veo3_03072026/generated_content_list.html
+ *
+ * Failed generations: Flow shows several error UIs (different copy/classes). The stable signal is
+ * the generation retry control: material icon "refresh" and/or accessible "Try again" / "Thử lại".
  */
 
 export type GeneratedTileType = 'video' | 'image' | 'failed' | 'generating'
@@ -142,6 +145,24 @@ export function parsedListToVerboseLayoutString(data: ParsedGeneratedList): stri
  * Use: page.evaluate(parseGeneratedContentListInPage, S.generatedListContainer)
  */
 export function parseGeneratedContentListInPage(selector: string): ParsedGeneratedList {
+    /** True if this tile has Flow's "retry this generation" action (all failed variants expose it). */
+    function tileHasFailedGenerationRetry(el: HTMLElement): boolean {
+      for (const btn of el.querySelectorAll('button')) {
+        const a11y = `${btn.getAttribute('aria-label') ?? ''} ${btn.getAttribute('title') ?? ''}`.toLowerCase()
+        if (/\b(retry|try again|thử lại)\b/.test(a11y)) return true
+        for (const icon of btn.querySelectorAll('i')) {
+          const t = (icon.textContent ?? '').trim().toLowerCase()
+          if (t === 'refresh' || t.includes('refresh')) return true
+        }
+        for (const span of btn.querySelectorAll('span')) {
+          const tx = (span.textContent ?? '').trim().toLowerCase()
+          // Flow uses visually hidden sr-only text; allow substring / any casing (Unicode)
+          if (tx.includes('thử lại') || tx.includes('try again') || /^retry$/i.test(tx.trim())) return true
+        }
+      }
+      return false
+    }
+
     const container = document.querySelector(selector) as HTMLElement | null
     if (!container) return { rows: [], videos: [], images: [], failed: [], generating: [], totalVideoSlots: 0 }
 
@@ -181,11 +202,17 @@ export function parseGeneratedContentListInPage(selector: string): ParsedGenerat
         const workflowId = workflowIdMatch ? workflowIdMatch[1] : null
 
         const img = tileEl.querySelector('img[src*="getMediaUrlRedirect"]') as HTMLImageElement | null
-        const video = (tileEl.querySelector('video[src*="getMediaUrlRedirect"]') || tileEl.querySelector('video[src*="Redirect"]')) as HTMLVideoElement | null
+        /** Only a real Flow output counts as "completed"; broad `video[src*="Redirect"]` can false-positive and hide policy/other failed tiles. */
+        const videoCompleted = tileEl.querySelector(
+          'video[src*="getMediaUrlRedirect"]'
+        ) as HTMLVideoElement | null
+        const videoLoose =
+          videoCompleted ||
+          (tileEl.querySelector('video[src*="Redirect"]') as HTMLVideoElement | null)
         const hasProgress = !!tileEl.querySelector('.sc-55ebc859-7') // generating progress %
 
         // Generating: has progress % (check before failed — same tile can have both blocks in DOM, progress is current state)
-        if (hasProgress && !video) {
+        if (hasProgress && !videoCompleted) {
           globalVideoIndex++
           const tile: GeneratingTile = {
             type: 'generating',
@@ -201,33 +228,10 @@ export function parseGeneratedContentListInPage(selector: string): ParsedGenerat
           continue
         }
 
-        // Failed: has "Không thành công" block (and no progress — already handled above)
-        const failedBlock = tileEl.querySelector('.sc-9a984650-1.dEfdsQ')
-        if (failedBlock) {
-          const errorEl = tileEl.querySelector('.sc-9a984650-2')
-          const errorMessage = errorEl ? (errorEl.textContent ?? '').trim() : null
-          const hasRetry = !!tileEl.querySelector('button i') // refresh icon in button
-          globalVideoIndex++
-          const tile: FailedTile = {
-            type: 'failed',
-            tileId,
-            href,
-            workflowId,
-            positionInRow: i,
-            outputFileName: `${globalVideoIndex}.mp4`,
-            videoIndex: globalVideoIndex,
-            errorMessage,
-            hasRetry,
-          }
-          tiles.push(tile)
-          result.failed.push(tile)
-          continue
-        }
-
-        // Image tile: has .sc-5923b123-0 (uploaded image), has img, no video
+        // Image tile: has .sc-5923b123-0 (uploaded image), has img, no video — before failed so uploads are never misread as failed
         const isImageTile = !!tileEl.querySelector('.sc-5923b123-0')
 
-        if (img && !video && isImageTile) {
+        if (img && !videoLoose && isImageTile) {
           const tile: ImageTile = {
             type: 'image',
             tileId,
@@ -243,9 +247,49 @@ export function parseGeneratedContentListInPage(selector: string): ParsedGenerat
           continue
         }
 
+        // Failed: any Flow error layout — stable signal is the generation retry control (refresh / Try again / Thử lại).
+        // Fallback: known title/error regions if Google changes the button shape but copy remains.
+        const hasRetry = tileHasFailedGenerationRetry(tileEl)
+        const failedBlockOld = tileEl.querySelector('.sc-9a984650-1.dEfdsQ')
+        const failedBlockNew = tileEl.querySelector('.sc-25d34a31-1')
+        const text = tileEl.textContent ?? ''
+        const failedByViTitle = text.includes('Không thành công')
+        const failedByEnCopy = text.includes('Something went wrong')
+        // Policy / safety copy (failed_item_2.html) — different body text, same retry row
+        const failedByPolicyVi =
+          text.includes('chính sách') || text.includes('vi phạm') || text.includes('vi pham')
+        const looksFailedByCopy = !!(
+          failedBlockOld ||
+          failedBlockNew ||
+          failedByViTitle ||
+          failedByEnCopy ||
+          failedByPolicyVi
+        )
+        if (!videoCompleted && !hasProgress && (hasRetry || looksFailedByCopy)) {
+          const errorEl =
+            tileEl.querySelector('.sc-9a984650-2') || tileEl.querySelector('.sc-25d34a31-2')
+          const errorMessage = errorEl ? (errorEl.textContent ?? '').trim() : null
+          globalVideoIndex++
+          const tile: FailedTile = {
+            type: 'failed',
+            tileId,
+            href,
+            workflowId,
+            positionInRow: i,
+            outputFileName: `${globalVideoIndex}.mp4`,
+            videoIndex: globalVideoIndex,
+            errorMessage,
+            // All Flow failed generations expose retry; if DOM hides icon text, still allow tracker to wait / click
+            hasRetry: hasRetry || looksFailedByCopy,
+          }
+          tiles.push(tile)
+          result.failed.push(tile)
+          continue
+        }
+
         // Rightmost tile with img and no video (fallback for image)
         const isRightmost = i === tileWrappers.length - 1
-        if (img && !video && !hasProgress && isRightmost) {
+        if (img && !videoLoose && !hasProgress && isRightmost) {
           const tile: ImageTile = {
             type: 'image',
             tileId,
@@ -262,7 +306,7 @@ export function parseGeneratedContentListInPage(selector: string): ParsedGenerat
         }
 
         // Completed video — add to row tiles only; result.videos built in second pass in prompt order
-        if (video) {
+        if (videoLoose) {
           const thumb = tileEl.querySelector('img[src*="getMediaUrlRedirect"]') as HTMLImageElement | null
           const tile: VideoTile = {
             type: 'video',
@@ -272,7 +316,7 @@ export function parseGeneratedContentListInPage(selector: string): ParsedGenerat
             positionInRow: i,
             outputFileName: '',
             videoIndex: 0,
-            videoSrc: video.getAttribute('src'),
+            videoSrc: videoLoose.getAttribute('src'),
             imgSrc: thumb ? thumb.getAttribute('src') : null,
           }
           tiles.push(tile)

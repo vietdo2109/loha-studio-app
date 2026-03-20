@@ -79,13 +79,23 @@ export const VEO3_SELECTORS = {
   generatingTileWithProgress: '[data-tile-id] .sc-55ebc859-7.kAxcVK',
 
   /**
-   * FAILED video tile (Veo3 error, not tool): has "Không thành công" and error message in .sc-9a984650-2.
-   * Position in list = same as if it had completed (so e.g. 4.mp4 | 3 failed | 2.mp4 | 1.mp4 | 1.png → failed = 3.mp4 slot).
-   * We cannot know "which script / which prompt" from DOM; we only know position (left-to-right index).
+   * FAILED video tile (Veo3 error, not tool): Flow uses multiple error layouts; the stable signal is
+   * the generation retry control (material icon `refresh` / Try again / Thử lại). Exclude completed
+   * video tiles so we never match an unrelated refresh elsewhere on the card.
+   * Fallback selectors: legacy title nodes + common error copy (see html_inpects).
    */
-  generatedFailedVideoTile: '[data-tile-id]:has(div.sc-9a984650-1.dEfdsQ)',
-  /** Retry button inside a failed tile: first button in the action group .sc-9a984650-5 (refresh icon). Use scoped to failed tile. */
-  generatedFailedRetryBtn: 'div.sc-9a984650-5 button',
+  generatedFailedVideoTile:
+    '[data-tile-id]:has(button:has(i:text-is("refresh"))):not(:has(video[src*="getMediaUrlRedirect"])), ' +
+    '[data-tile-id]:has(button[aria-label*="Try again" i]):not(:has(video[src*="getMediaUrlRedirect"])), ' +
+    '[data-tile-id]:has(button[aria-label*="Thử lại"]):not(:has(video[src*="getMediaUrlRedirect"])), ' +
+    '[data-tile-id]:has(button:has-text("Try again")):not(:has(video[src*="getMediaUrlRedirect"])), ' +
+    '[data-tile-id]:has(div.sc-9a984650-1.dEfdsQ), [data-tile-id]:has(div.sc-25d34a31-1), ' +
+    '[data-tile-id]:has-text("Không thành công"), [data-tile-id]:has-text("Something went wrong"), ' +
+    '[data-tile-id]:has-text("chính sách"), [data-tile-id]:has-text("vi phạm")',
+  /** Retry inside a failed tile: refresh icon, a11y label, or legacy action rows. Scoped to the failed tile. */
+  generatedFailedRetryBtn:
+    'button:has(i:text-is("refresh")), button[aria-label*="Try again" i], button[aria-label*="Thử lại"], ' +
+    'button:has-text("Try again"), button:has-text("Thử lại"), div.sc-9a984650-5 button, div.sc-25d34a31-5 button:has(i:text-is("refresh"))',
 
   // ─── Context menu on generated video (generated_content_download_menu.html): Tải xuống → submenu → 1080p ─
   contextMenuDownload: '[role="menu"] [role="menuitem"]:has-text("Tải xuống"), [role="menu"] div:has-text("Tải xuống")',

@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.2] - 2026-03-20
+
+### Fixed
+
+- **Veo3 / Flow**: Failed-generation detection and retry for updated DOM (including policy/safety copy), stricter completed-video vs failed classification, retry only marked after a successful click, and broader retry-button matching.
+- **TypeScript**: `page.on('request'|'response')` listeners typed with Patchright `Request` / `Response` (fixes overload errors).
+
 ## [1.1.1] - 2026-03-19
 
 ### Changed

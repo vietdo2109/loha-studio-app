@@ -89,7 +89,9 @@ export function Veo3ScriptModal({ onClose, onSave, onDelete, scripts = [], initi
               >
                 <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.name}</span>
                 <span style={{ fontSize: 11, color: 'var(--text3)' }}>{s.prompts.length} prompt{s.prompts.length !== 1 ? 's' : ''}</span>
-                <Icon.ChevronR style={{ color: 'var(--text3)' }} />
+                <span style={{ color: 'var(--text3)', display: 'flex', flexShrink: 0 }}>
+                  <Icon.ChevronR />
+                </span>
               </div>
             ))}
           </div>
