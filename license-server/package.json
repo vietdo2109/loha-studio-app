@@ -6,7 +6,9 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "set-webhook": "node scripts/set-telegram-webhook.js",
+    "delete-webhook": "node scripts/delete-telegram-webhook.js"
   },
   "dependencies": {
     "@vercel/postgres": "^0.10.0",
