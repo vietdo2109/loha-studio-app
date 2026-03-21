@@ -13,15 +13,6 @@ Set env vars:
 
 - `POSTGRES_URL` (Vercel Postgres connection string)
 - `ADMIN_API_KEY` (secret used by admin page/API)
-- **Telegram bot (optional):** `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALLOWED_IDS` (optional), `BASE_URL` (public site URL), `DEFAULT_MODELS` (optional, mặc định `veo,grok` — dùng khi lệnh `/key` không kèm `veo`/`grok`/`sora`). Bot: **`POST /api/telegram-webhook`** — lệnh `/key` (có chọn model), `/addmodels` (bật thêm model theo SĐT).
-
-Sau mỗi lần deploy, trong `license-server`:
-
-```bash
-npm run set-webhook
-```
-
-Script gọi Telegram `setWebhook` với URL `BASE_URL/api/telegram-webhook` (đọc `.env.local`).
 
 Copy `.env.example` to `.env.local` in local dev.
 
