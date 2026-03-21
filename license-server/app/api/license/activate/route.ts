@@ -14,7 +14,8 @@ export async function POST(req: NextRequest) {
 
   const keyHash = hashKey(key)
   const found = await sql`
-    SELECT id, role, expires_at, revoked, bound_device_id, activated_at
+    SELECT id, role, expires_at, revoked, bound_device_id, activated_at,
+           grok_active, veo_active, sora_active
     FROM licenses
     WHERE key_hash = ${keyHash}
     LIMIT 1;
@@ -48,6 +49,9 @@ export async function POST(req: NextRequest) {
       id: row.id as string,
       role: (row.role || 'user') as 'user' | 'admin',
       expiresAt: Number(row.expires_at),
+      grokActive: Boolean(row.grok_active),
+      veoActive: Boolean(row.veo_active),
+      soraActive: Boolean(row.sora_active),
     },
   })
 }

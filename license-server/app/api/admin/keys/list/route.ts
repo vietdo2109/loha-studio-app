@@ -28,7 +28,8 @@ export async function GET(req: NextRequest) {
 
   const rows = q
     ? await sql`
-        SELECT id, key_preview, key_phone_tag, role, expires_at, revoked, created_at, created_by, note, bound_device_id, activated_at, last_seen_at
+        SELECT id, key_preview, key_phone_tag, role, expires_at, revoked, created_at, created_by, note, bound_device_id, activated_at, last_seen_at,
+               grok_active, veo_active, sora_active
         FROM licenses
         WHERE key_preview ILIKE ${like}
            OR COALESCE(key_phone_tag, '') ILIKE ${like}
@@ -38,7 +39,8 @@ export async function GET(req: NextRequest) {
         OFFSET ${offset};
       `
     : await sql`
-        SELECT id, key_preview, key_phone_tag, role, expires_at, revoked, created_at, created_by, note, bound_device_id, activated_at, last_seen_at
+        SELECT id, key_preview, key_phone_tag, role, expires_at, revoked, created_at, created_by, note, bound_device_id, activated_at, last_seen_at,
+               grok_active, veo_active, sora_active
         FROM licenses
         ORDER BY created_at DESC
         LIMIT ${pageSize}

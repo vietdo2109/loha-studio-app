@@ -3,7 +3,9 @@
 This app provides:
 - License activation API for Electron clients
 - License status API for periodic re-validation
-- Admin web page to create/revoke keys
+- Admin web page to create/revoke keys and **toggle per-key AI product access** (`veo_active`, `grok_active`, `sora_active`)
+
+**Legacy keys:** DB migration sets `veo_active` and `grok_active` to **true** by default so existing customers keep access (Veo3 is guaranteed for old rows unless you turn it off in admin).
 
 ## 1) Configure
 
@@ -46,7 +48,10 @@ Success:
   "license": {
     "id": "uuid",
     "role": "user",
-    "expiresAt": 1770000000000
+    "expiresAt": 1770000000000,
+    "veoActive": true,
+    "grokActive": true,
+    "soraActive": false
   }
 }
 ```
@@ -65,10 +70,17 @@ Success:
   "license": {
     "id": "uuid",
     "role": "user",
-    "expiresAt": 1770000000000
+    "expiresAt": 1770000000000,
+    "veoActive": true,
+    "grokActive": true,
+    "soraActive": false
   }
 }
 ```
+
+### `POST /api/admin/keys/update-features`
+
+Admin-only. Body: `{ "id": "<license uuid>", "veoActive"?: boolean, "grokActive"?: boolean, "soraActive"?: boolean }` — only include fields you want to change.
 
 ## 4) Deploy on Vercel
 

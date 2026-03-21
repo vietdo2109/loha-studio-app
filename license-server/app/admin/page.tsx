@@ -15,6 +15,9 @@ type Item = {
   bound_device_id?: string
   activated_at?: number
   last_seen_at?: number
+  grok_active?: boolean
+  veo_active?: boolean
+  sora_active?: boolean
 }
 
 export default function AdminPage() {
@@ -34,8 +37,22 @@ export default function AdminPage() {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [revokeTarget, setRevokeTarget] = useState<Item | null>(null)
+  const [createGrok, setCreateGrok] = useState(true)
+  const [createVeo, setCreateVeo] = useState(true)
+  const [createSora, setCreateSora] = useState(false)
 
   const headers = useMemo(() => ({ 'Content-Type': 'application/json', 'x-admin-key': adminKey }), [adminKey])
+
+  const updateFeatures = async (id: string, patch: { grokActive?: boolean; veoActive?: boolean; soraActive?: boolean }) => {
+    const res = await fetch('/api/admin/keys/update-features', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ id, ...patch }),
+    })
+    const data = await res.json()
+    if (!res.ok || !data?.ok) throw new Error(data?.reason || `HTTP_${res.status}`)
+    await refresh()
+  }
 
   const refresh = async (nextPage?: number) => {
     if (!adminKey) return
@@ -140,6 +157,15 @@ export default function AdminPage() {
             <option value="admin">admin</option>
           </select>
           <input value={note} onChange={(e) => setNote(e.target.value)} placeholder="Ghi chú (optional)" style={{ minWidth: 220 }} />
+          <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 12 }}>
+            <input type="checkbox" checked={createVeo} onChange={(e) => setCreateVeo(e.target.checked)} /> Veo
+          </label>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 12 }}>
+            <input type="checkbox" checked={createGrok} onChange={(e) => setCreateGrok(e.target.checked)} /> Grok
+          </label>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 12 }}>
+            <input type="checkbox" checked={createSora} onChange={(e) => setCreateSora(e.target.checked)} /> Sora
+          </label>
           <button
             disabled={busy || !adminKey || phoneTag.trim().length < 6}
             onClick={async () => {
@@ -149,7 +175,17 @@ export default function AdminPage() {
                 const res = await fetch('/api/admin/keys/create', {
                   method: 'POST',
                   headers,
-                  body: JSON.stringify({ count, durationDays: days, phoneTag, role, note, createdBy: 'admin-web' }),
+                  body: JSON.stringify({
+                    count,
+                    durationDays: days,
+                    phoneTag,
+                    role,
+                    note,
+                    createdBy: 'admin-web',
+                    veoActive: createVeo,
+                    grokActive: createGrok,
+                    soraActive: createSora,
+                  }),
                 })
                 const data = await res.json()
                 if (!res.ok || !data?.ok) throw new Error(data?.reason || `HTTP_${res.status}`)
@@ -225,6 +261,9 @@ export default function AdminPage() {
               <tr>
                 <th>Key</th>
                 <th>Phone</th>
+                <th>Veo</th>
+                <th>Grok</th>
+                <th>Sora</th>
                 <th>Role</th>
                 <th>Expires</th>
                 <th>Status</th>
@@ -238,6 +277,63 @@ export default function AdminPage() {
                 <tr key={it.id}>
                   <td>{it.key_preview}</td>
                   <td>{it.key_phone_tag || '-'}</td>
+                  <td>
+                    <input
+                      type="checkbox"
+                      checked={it.veo_active !== false}
+                      disabled={busy || it.revoked || !adminKey}
+                      onChange={async (e) => {
+                        try {
+                          setBusy(true)
+                          setError('')
+                          await updateFeatures(it.id, { veoActive: e.target.checked })
+                        } catch (err: any) {
+                          setError(err?.message || String(err))
+                        } finally {
+                          setBusy(false)
+                        }
+                      }}
+                      title="Veo3 / Flow"
+                    />
+                  </td>
+                  <td>
+                    <input
+                      type="checkbox"
+                      checked={it.grok_active !== false}
+                      disabled={busy || it.revoked || !adminKey}
+                      onChange={async (e) => {
+                        try {
+                          setBusy(true)
+                          setError('')
+                          await updateFeatures(it.id, { grokActive: e.target.checked })
+                        } catch (err: any) {
+                          setError(err?.message || String(err))
+                        } finally {
+                          setBusy(false)
+                        }
+                      }}
+                      title="Grok Imagine"
+                    />
+                  </td>
+                  <td>
+                    <input
+                      type="checkbox"
+                      checked={it.sora_active === true}
+                      disabled={busy || it.revoked || !adminKey}
+                      onChange={async (e) => {
+                        try {
+                          setBusy(true)
+                          setError('')
+                          await updateFeatures(it.id, { soraActive: e.target.checked })
+                        } catch (err: any) {
+                          setError(err?.message || String(err))
+                        } finally {
+                          setBusy(false)
+                        }
+                      }}
+                      title="Sora (khi có trong app)"
+                    />
+                  </td>
                   <td>{it.role}</td>
                   <td>{new Date(Number(it.expires_at)).toLocaleString()}</td>
                   <td>{it.revoked ? 'revoked' : 'active'}</td>

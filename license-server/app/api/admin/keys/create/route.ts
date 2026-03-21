@@ -21,6 +21,10 @@ export async function POST(req: NextRequest) {
   const now = nowMs()
   const expiresAt = now + durationDays * 24 * 60 * 60 * 1000
   const createdBy = String(body?.createdBy || 'admin')
+  /** Defaults: Veo + Grok on, Sora off (admin can override per key) */
+  const grokActive = typeof body?.grokActive === 'boolean' ? body.grokActive : true
+  const veoActive = typeof body?.veoActive === 'boolean' ? body.veoActive : true
+  const soraActive = typeof body?.soraActive === 'boolean' ? body.soraActive : false
 
   const generated: Array<{ id: string; key: string; role: 'user' | 'admin'; expiresAt: number }> = []
   for (let i = 0; i < count; i++) {
@@ -28,8 +32,14 @@ export async function POST(req: NextRequest) {
     const keyHash = hashKey(key)
     const id = crypto.randomUUID()
     await sql`
-      INSERT INTO licenses (id, key_hash, key_preview, key_phone_tag, role, expires_at, revoked, created_at, created_by, note)
-      VALUES (${id}, ${keyHash}, ${previewKey(key)}, ${phoneTag}, ${role}, ${expiresAt}, FALSE, ${now}, ${createdBy}, ${note});
+      INSERT INTO licenses (
+        id, key_hash, key_preview, key_phone_tag, role, expires_at, revoked, created_at, created_by, note,
+        grok_active, veo_active, sora_active
+      )
+      VALUES (
+        ${id}, ${keyHash}, ${previewKey(key)}, ${phoneTag}, ${role}, ${expiresAt}, FALSE, ${now}, ${createdBy}, ${note},
+        ${grokActive}, ${veoActive}, ${soraActive}
+      );
     `
     generated.push({ id, key, role: role as 'user' | 'admin', expiresAt })
   }

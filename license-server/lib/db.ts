@@ -23,6 +23,10 @@ export async function ensureSchema(): Promise<void> {
     );
   `
   await sql`ALTER TABLE licenses ADD COLUMN IF NOT EXISTS key_phone_tag TEXT;`
+  // Per-key AI product access (admin-controlled). Existing rows get defaults on ADD COLUMN.
+  await sql`ALTER TABLE licenses ADD COLUMN IF NOT EXISTS grok_active BOOLEAN NOT NULL DEFAULT TRUE;`
+  await sql`ALTER TABLE licenses ADD COLUMN IF NOT EXISTS veo_active BOOLEAN NOT NULL DEFAULT TRUE;`
+  await sql`ALTER TABLE licenses ADD COLUMN IF NOT EXISTS sora_active BOOLEAN NOT NULL DEFAULT FALSE;`
   await sql`CREATE INDEX IF NOT EXISTS idx_licenses_created_at ON licenses (created_at DESC);`
   await sql`CREATE INDEX IF NOT EXISTS idx_licenses_key_phone_tag ON licenses (key_phone_tag);`
   schemaReady = true

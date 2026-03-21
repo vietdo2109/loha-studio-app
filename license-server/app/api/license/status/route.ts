@@ -11,7 +11,8 @@ export async function GET(req: NextRequest) {
   if (!token) return NextResponse.json({ ok: false, reason: 'MISSING_TOKEN' }, { status: 401 })
 
   const found = await sql`
-    SELECT id, role, expires_at, revoked, bound_device_id
+    SELECT id, role, expires_at, revoked, bound_device_id,
+           grok_active, veo_active, sora_active
     FROM licenses
     WHERE activation_token = ${token}
     LIMIT 1;
@@ -35,6 +36,9 @@ export async function GET(req: NextRequest) {
       id: row.id as string,
       role: (row.role || 'user') as 'user' | 'admin',
       expiresAt: Number(row.expires_at),
+      grokActive: Boolean(row.grok_active),
+      veoActive: Boolean(row.veo_active),
+      soraActive: Boolean(row.sora_active),
     },
   })
 }
