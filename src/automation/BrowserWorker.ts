@@ -48,15 +48,19 @@ export class BrowserWorker {
       setupNetworkIntercept(ctx, job)
 
       this.emit('progress', { jobId: job.id, step: 'Mo grok.com/imagine...', percent: 5 })
-      if (!this.page.url().includes('grok.com/imagine')) {
-        await this.page.goto(GROK_URL, { waitUntil: 'domcontentloaded' })
-        try {
-          await this.page.waitForLoadState('networkidle', { timeout: 30000 })
-        } catch {
-          this.log('warn', 'waitForLoadState networkidle timeout, tiep tuc voi trang thai hien tai')
+      try {
+        if (!this.page.url().includes('grok.com/imagine')) {
+          await this.page.goto(GROK_URL, { waitUntil: 'domcontentloaded' })
+        } else {
+          // Reload trước mỗi job để thanh prompt / preview ảnh không dùng chung DOM state (nhiều profile song song)
+          await this.page.reload({ waitUntil: 'domcontentloaded' })
         }
-      } else {
-        await this.page.waitForTimeout(800)
+        await this.page.waitForLoadState('networkidle', { timeout: 30000 }).catch(() => {
+          this.log('warn', 'waitForLoadState networkidle timeout, tiep tuc voi trang thai hien tai')
+        })
+        await this.page.waitForTimeout(600)
+      } catch (e) {
+        this.log('warn', `Tai trang imagine: ${e}`)
       }
 
       switch (job.mode) {

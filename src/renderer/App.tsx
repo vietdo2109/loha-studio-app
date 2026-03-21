@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react"
-import type { Platform, AppPanel, Project, QueueProject, QueueJob, JobStatus, Account, AcctStatus, Veo3Project, Veo3QueueProject, Veo3QueueJob, Script } from "./types"
+import type { Platform, AppPanel, Project, QueueProject, QueueJob, JobStatus, AcctStatus, Veo3Project, Veo3QueueProject, Veo3QueueJob, Script } from "./types"
 declare const __APP_NAME__: string
 import { GlobalStyle } from "./GlobalStyle"
 import {
@@ -15,9 +15,10 @@ import {
   Veo3ScriptModal,
   Veo3QueueProjectRow,
   Veo3ProfilesModal,
-  AccountsPanel,
+  GrokProfilesModal,
   ErrorPanel,
 } from "./components"
+import type { GrokProfileRow } from "./components/GrokProfilesModal"
 
 export default function App() {
   type ActivationStatus = {
@@ -31,6 +32,10 @@ export default function App() {
     deviceId?: string
     apiBaseUrl?: string
     adminUrl?: string
+    /** License server feature flags; omitted/undefined = allow (grandfather / old cache) */
+    veoActive?: boolean
+    grokActive?: boolean
+    soraActive?: boolean
   }
   const [platform,        setPlatform]        = useState<Platform>("Veo3")
   const [activePanel,     setActivePanel]     = useState<AppPanel>("projects")
@@ -38,8 +43,7 @@ export default function App() {
   const [projects,        setProjects]        = useState<Project[]>([])
   const [selectedIds,     setSelectedIds]     = useState<Set<string>>(new Set())
   const [queue,           setQueue]           = useState<QueueProject[]>([])
-  const [accounts,        setAccounts]        = useState<Account[]>([])
-  const [credFile,        setCredFile]        = useState("")
+  const [grokProfilesList, setGrokProfilesList] = useState<GrokProfileRow[]>([])
   const [showNewProject,  setShowNewProject]  = useState(false)
   const [editProject,     setEditProject]     = useState<Project | null>(null)
   const [selectedJobDetail, setSelectedJobDetail] = useState<{ qp: QueueProject; job: QueueJob } | null>(null)
@@ -58,8 +62,12 @@ export default function App() {
   const [sessionSummary,  setSessionSummary]  = useState<{ total: number; success: number; failed: number } | null>(null)
   const [isStartingVeo3,  setIsStartingVeo3]  = useState(false)
   const [showVeo3Modal, setShowVeo3Modal] = useState(false)
+  const [showGrokModal, setShowGrokModal] = useState(false)
   const [veo3ProfilesList, setVeo3ProfilesList] = useState<{ profileId: string; profileDir: string; loggedIn: boolean; email?: string }[]>([])
   const [activationStatus, setActivationStatus] = useState<ActivationStatus>({ activated: false })
+  /** License server: which AI products this key may use (undefined = allowed for Veo/Grok legacy). */
+  const allowVeo = activationStatus.veoActive !== false
+  const allowGrok = activationStatus.grokActive !== false
   const [activationLoading, setActivationLoading] = useState(true)
   const [activationKey, setActivationKey] = useState("")
   const [activationBusy, setActivationBusy] = useState(false)
@@ -109,6 +117,14 @@ export default function App() {
   }
 
   const pushToQueue = async () => {
+    if (platform === "Veo3" && !allowVeo) {
+      setErrors(prev => [...prev, "License không bật Veo3. Liên hệ admin."])
+      return
+    }
+    if (platform === "Grok" && !allowGrok) {
+      setErrors(prev => [...prev, "License không bật Grok. Liên hệ admin."])
+      return
+    }
     if (platform === "Veo3") {
       const selected = veo3Projects.filter(p => veo3SelectedIds.has(p.id))
       if (selected.length === 0) return
@@ -157,17 +173,44 @@ export default function App() {
       const selected = projects.filter(p => selectedIds.has(p.id))
       if (selected.length === 0) return
 
-      const newItems: QueueProject[] = selected.map(p => ({
-        ...p,
-        expanded: true,
-        jobs: p.prompts.map((prompt, i) => ({
-          id:       `${p.id}-${i}`,
-          index:    i,
-          prompt,
-          status:   "pending" as JobStatus,
-          progress: 0,
-        })),
-      }))
+      const newItems: QueueProject[] = []
+      for (const p of selected) {
+        let jobs: QueueJob[]
+        const scriptModeImages =
+          p.useScripts &&
+          p.scriptIds &&
+          p.scriptIds.length > 0 &&
+          (p.mode === "animate_image" || p.mode === "edit_image")
+
+        if (scriptModeImages) {
+          const script = scripts.find(s => s.id === p.scriptIds![0])
+          if (!script) continue
+          const imagePaths: string[] = p.imageDir
+            ? await ((window as any).electronAPI?.veo3GetImagePathsFromDir?.(p.imageDir) ?? Promise.resolve([]))
+            : []
+          if (imagePaths.length === 0) continue
+          let idx = 0
+          jobs = imagePaths.flatMap((_, imageIndex) =>
+            script.prompts.map(prompt => ({
+              id: `${p.id}-${idx}`,
+              index: idx++,
+              prompt,
+              status: "pending" as JobStatus,
+              progress: 0,
+              imageIndex,
+            }))
+          )
+        } else {
+          jobs = p.prompts.map((prompt, i) => ({
+            id: `${p.id}-${i}`,
+            index: i,
+            prompt,
+            status: "pending" as JobStatus,
+            progress: 0,
+          }))
+        }
+        newItems.push({ ...p, expanded: true, jobs })
+      }
 
       setQueue(prev => {
         const existingIds = new Set(prev.map(q => q.id))
@@ -203,17 +246,13 @@ export default function App() {
     }
   }
 
-  const handleLoadCred = async () => {
-    const file = await (window as any).electronAPI?.selectCredentialsFile?.()
-    if (!file) return
-    setCredFile(file.path)
-    setAccounts(file.credentials.map((c: any, i: number) => ({
-      id: `acct-${i}`, email: c.email, status: "idle" as AcctStatus,
-    })))
-  }
-
   const handleStart = async () => {
-    if (queue.length === 0 || accounts.length === 0 || isStarting) return
+    if (!allowGrok) {
+      setErrors(prev => [...prev, "License không bật Grok Imagine. Liên hệ admin."])
+      return
+    }
+    const grokLoggedIn = grokProfilesList.filter(p => p.loggedIn).length
+    if (queue.length === 0 || grokLoggedIn === 0 || isStarting) return
     const queueToRun = queue
       .map(qp => ({
         ...qp,
@@ -236,7 +275,6 @@ export default function App() {
         return
       }
       const res = await api.startSession({
-        credentialsPath: credFile,
         queue: queueToRun,
       })
       if (!res?.success && res?.error) {
@@ -257,13 +295,26 @@ export default function App() {
     if (!api) return
 
     const handleAccountStatus = (_e: any, payload: { accountId: string; email: string; status: AcctStatus; error?: string }) => {
-      setAccounts(prev => {
-        const idx = prev.findIndex(a => a.id === payload.accountId)
+      const profileId = payload.accountId
+      setGrokProfilesList(prev => {
+        const idx = prev.findIndex(p => p.profileId === profileId)
+        const runStatus: GrokProfileRow["runStatus"] =
+          payload.status === "running" ? "running" : payload.status === "failed" ? "failed" : undefined
+        const patch: Partial<GrokProfileRow> = {
+          email: payload.email || undefined,
+          error: payload.error,
+          runStatus: payload.status === "ready" ? undefined : runStatus,
+        }
         if (idx === -1) {
-          return [...prev, { id: payload.accountId, email: payload.email, status: payload.status, error: payload.error }]
+          return [...prev, {
+            profileId,
+            profileDir: "",
+            loggedIn: payload.status === "ready",
+            ...patch,
+          }]
         }
         const next = [...prev]
-        next[idx] = { ...next[idx], status: payload.status, error: payload.error }
+        next[idx] = { ...next[idx], ...patch }
         return next
       })
     }
@@ -437,6 +488,12 @@ export default function App() {
     return () => { mounted = false }
   }, [])
 
+  useEffect(() => {
+    if (!activationStatus.activated) return
+    if (platform === "Veo3" && !allowVeo && allowGrok) setPlatform("Grok")
+    else if (platform === "Grok" && !allowGrok && allowVeo) setPlatform("Veo3")
+  }, [activationStatus.activated, activationStatus.veoActive, activationStatus.grokActive, allowVeo, allowGrok, platform])
+
   const handleSaveScript = useCallback((s: Script | Omit<Script, 'id'>) => {
     const api = (window as any).electronAPI
     if (!api?.getScripts || !api?.saveScripts) return
@@ -457,19 +514,73 @@ export default function App() {
     api.saveScripts(next)
   }, [scripts])
 
-  const readyCount = accounts.filter(a => a.status === "ready").length
-  const hasPendingJobs = platform === "Veo3"
-    ? veo3Queue.some(qp => qp.jobs.some(j => j.status !== "done"))
-    : queue.some(qp => qp.jobs.some(j => j.status !== "done"))
-  const hasPendingVeo3Job = veo3Queue.some(qp => qp.jobs.some(j => j.status === 'pending'))
-  const pendingVeo3Count = veo3Queue.reduce((s, qp) => s + qp.jobs.filter(j => j.status === 'pending').length, 0)
-
   const refreshVeo3Profiles = useCallback(async () => {
     const api = (window as any).electronAPI
     if (!api?.veo3ListProfiles) return
     const res = await api.veo3ListProfiles()
     setVeo3ProfilesList(res?.profiles ?? [])
   }, [])
+
+  const refreshGrokProfiles = useCallback(async () => {
+    const api = (window as any).electronAPI
+    if (!api?.grokListProfiles) return
+    const res = await api.grokListProfiles()
+    const list = res?.profiles ?? []
+    setGrokProfilesList(prev => {
+      const merged = list.map((p: { profileId: string; profileDir: string; loggedIn: boolean; email?: string }) => {
+        const old = prev.find(o => o.profileId === p.profileId)
+        return {
+          profileId: p.profileId,
+          profileDir: p.profileDir,
+          loggedIn: p.loggedIn,
+          email: p.email ?? old?.email,
+          runStatus: old?.runStatus,
+          error: old?.error,
+        } as GrokProfileRow
+      })
+      return merged
+    })
+  }, [])
+
+  const handleGrokStatus = useCallback((profileId: string, loggedIn: boolean, email?: string) => {
+    setGrokProfilesList(prev => {
+      const i = prev.findIndex(p => p.profileId === profileId)
+      if (i >= 0) {
+        const next = [...prev]
+        next[i] = { ...next[i], loggedIn, ...(email !== undefined && { email }) }
+        return next
+      }
+      return [...prev, { profileId, profileDir: "", loggedIn, ...(email !== undefined && { email }) }]
+    })
+  }, [])
+
+  const handleGrokOpenN = useCallback(async (n: number) => {
+    if (!allowGrok) {
+      setErrors(prev => [...prev, "License không bật Grok. Liên hệ admin."])
+      return
+    }
+    const api = (window as any).electronAPI
+    if (!api?.grokOpenProfiles) return
+    await api.grokOpenProfiles(n)
+    await refreshGrokProfiles()
+  }, [refreshGrokProfiles, allowGrok])
+
+  const handleGrokCloseAll = useCallback(async () => {
+    const api = (window as any).electronAPI
+    api?.grokCloseAll?.()
+    await refreshGrokProfiles()
+  }, [refreshGrokProfiles])
+
+  const handleGrokOpenSelected = useCallback(async (profileIds: string[]) => {
+    if (!allowGrok) {
+      setErrors(prev => [...prev, "License không bật Grok. Liên hệ admin."])
+      return
+    }
+    const api = (window as any).electronAPI
+    if (!api?.grokOpenSelectedProfiles || profileIds.length === 0) return
+    await api.grokOpenSelectedProfiles(profileIds)
+    await refreshGrokProfiles()
+  }, [refreshGrokProfiles, allowGrok])
 
   const handleVeo3Status = useCallback((profileId: string, loggedIn: boolean, email?: string) => {
     setVeo3ProfilesList(prev => {
@@ -484,11 +595,15 @@ export default function App() {
   }, [])
 
   const handleVeo3OpenN = useCallback(async (n: number) => {
+    if (!allowVeo) {
+      setErrors(prev => [...prev, "License không bật Veo3. Liên hệ admin."])
+      return
+    }
     const api = (window as any).electronAPI
     if (!api?.veo3OpenProfiles) return
     await api.veo3OpenProfiles(n)
     await refreshVeo3Profiles()
-  }, [refreshVeo3Profiles])
+  }, [refreshVeo3Profiles, allowVeo])
 
   const handleVeo3CloseAll = useCallback(async () => {
     const api = (window as any).electronAPI
@@ -497,13 +612,21 @@ export default function App() {
   }, [refreshVeo3Profiles])
 
   const handleVeo3OpenSelected = useCallback(async (profileIds: string[]) => {
+    if (!allowVeo) {
+      setErrors(prev => [...prev, "License không bật Veo3. Liên hệ admin."])
+      return
+    }
     const api = (window as any).electronAPI
     if (!api?.veo3OpenSelectedProfiles || profileIds.length === 0) return
     await api.veo3OpenSelectedProfiles(profileIds)
     await refreshVeo3Profiles()
-  }, [refreshVeo3Profiles])
+  }, [refreshVeo3Profiles, allowVeo])
 
   const handleVeo3Start = useCallback(async () => {
+    if (!allowVeo) {
+      setErrors(prev => [...prev, "License không bật Veo3 (Google Flow). Liên hệ admin."])
+      return
+    }
     const pending = veo3Queue.filter(p => p.jobs.some(j => j.status === 'pending'))
     if (pending.length === 0) {
       setErrors(prev => [...prev, 'Không có job nào đang chờ. Thêm dự án và đẩy vào queue.'])
@@ -524,7 +647,7 @@ export default function App() {
       setErrors(prev => [...prev, res?.error ?? 'Chạy queue thất bại.'])
       setIsStartingVeo3(false)
     }
-  }, [veo3Queue, veo3ProfilesList])
+  }, [veo3Queue, veo3ProfilesList, allowVeo])
 
   const handleActivate = useCallback(async () => {
     const api = (window as any).electronAPI
@@ -560,6 +683,13 @@ export default function App() {
     const res = await api.openLicenseAdmin()
     if (!res?.success) setErrors(prev => [...prev, res?.error ?? 'Không mở được trang quản lý.'])
   }, [])
+
+  const grokLoggedInCount = grokProfilesList.filter(p => p.loggedIn).length
+  const hasPendingJobs = platform === "Veo3"
+    ? veo3Queue.some(qp => qp.jobs.some(j => j.status !== "done"))
+    : queue.some(qp => qp.jobs.some(j => j.status !== "done"))
+  const hasPendingVeo3Job = veo3Queue.some(qp => qp.jobs.some(j => j.status === 'pending'))
+  const pendingVeo3Count = veo3Queue.reduce((s, qp) => s + qp.jobs.filter(j => j.status === 'pending').length, 0)
 
   if (activationLoading) {
     return (
@@ -652,7 +782,9 @@ export default function App() {
           <span style={{ fontWeight: 700, fontSize: 13, letterSpacing: "-.01em" }}>{appName}</span>
           <div style={{ width: 1, height: 14, background: "var(--border)", margin: "0 4px" }}/>
           <div style={{ display: "flex", gap: 2, WebkitAppRegion: "no-drag" } as any}>
-            {(["Veo3", "Grok"] as Platform[]).map(p => (
+            {(["Veo3", "Grok"] as Platform[])
+              .filter(p => (p === "Veo3" ? allowVeo : allowGrok))
+              .map(p => (
               <button key={p} onClick={() => setPlatform(p)} style={{
                 padding: "3px 12px", borderRadius: 6, fontSize: 12, fontWeight: 500,
                 background: platform === p ? "var(--bg2)" : "transparent",
@@ -706,27 +838,35 @@ export default function App() {
             </button>
             {platform === "Grok" && (
               <button
-                onClick={() => setActivePanel("accounts")}
+                onClick={() => allowGrok && setShowGrokModal(true)}
+                disabled={!allowGrok}
+                title={allowGrok ? "Mở quản lý profile Chrome (Grok Imagine)" : "License không bật Grok"}
                 style={{
                   display: "flex", alignItems: "center", gap: 5,
                   padding: "3px 10px", borderRadius: 6, fontSize: 12, fontWeight: 500,
-                  background: activePanel === "accounts" ? "var(--bg2)" : "transparent",
-                  color: activePanel === "accounts" ? "var(--text)" : "var(--text3)",
+                  background: allowGrok ? "var(--accent-bg)" : "var(--bg3)",
+                  color: allowGrok ? "var(--accent)" : "var(--text3)",
                   transition: "all .12s",
+                  opacity: allowGrok ? 1 : 0.65,
+                  cursor: allowGrok ? "pointer" : "not-allowed",
                 }}
               >
-                <Icon.Accounts/> Grok tài khoản
+                <Icon.User/> Grok tài khoản
               </button>
             )}
             {platform === "Veo3" && (
               <button
-                onClick={() => setShowVeo3Modal(true)}
+                onClick={() => allowVeo && setShowVeo3Modal(true)}
+                disabled={!allowVeo}
+                title={allowVeo ? "Mở quản lý profile Chrome (Flow)" : "License không bật Veo3"}
                 style={{
                   display: "flex", alignItems: "center", gap: 5,
                   padding: "3px 10px", borderRadius: 6, fontSize: 12, fontWeight: 500,
-                  background: "var(--accent-bg)",
-                  color: "var(--accent)",
+                  background: allowVeo ? "var(--accent-bg)" : "var(--bg3)",
+                  color: allowVeo ? "var(--accent)" : "var(--text3)",
                   transition: "all .12s",
+                  opacity: allowVeo ? 1 : 0.65,
+                  cursor: allowVeo ? "pointer" : "not-allowed",
                 }}
               >
                 <Icon.User/> Veo3 Profiles
@@ -774,16 +914,27 @@ export default function App() {
                     )}
                     {platform === "Veo3" && (
                       <>
-                        <Btn size="sm" variant="ghost" onClick={() => setShowScriptModal(true)}>
+                        <Btn size="sm" variant="ghost" disabled={!allowVeo} onClick={() => allowVeo && setShowScriptModal(true)} title={allowVeo ? undefined : "License không bật Veo3"}>
                           Thêm/sửa kịch bản
                         </Btn>
-                        <Btn size="sm" variant="primary" onClick={() => setShowVeo3NewProject(true)}>
+                        <Btn size="sm" variant="primary" disabled={!allowVeo} onClick={() => allowVeo && setShowVeo3NewProject(true)} title={allowVeo ? undefined : "License không bật Veo3"}>
                           <Icon.Plus /> Thêm dự án
                         </Btn>
                       </>
                     )}
+                    {platform === "Grok" && (
+                      <Btn
+                        size="sm"
+                        variant="ghost"
+                        disabled={!allowGrok}
+                        onClick={() => allowGrok && setShowScriptModal(true)}
+                        title={allowGrok ? "Kịch bản dùng chung với Veo3 (lưu trong app)" : "License không bật Grok"}
+                      >
+                        Thêm/sửa kịch bản
+                      </Btn>
+                    )}
                     {platform !== "Veo3" && (
-                      <Btn size="sm" variant="primary" onClick={() => setShowNewProject(true)}>
+                      <Btn size="sm" variant="primary" disabled={!allowGrok} onClick={() => allowGrok && setShowNewProject(true)} title={allowGrok ? undefined : "License không bật Grok"}>
                         <Icon.Plus /> Thêm
                       </Btn>
                     )}
@@ -801,7 +952,7 @@ export default function App() {
                       }}>
                         <Icon.Projects/>
                         <div style={{ fontSize: 13 }}>Chưa có dự án Veo3 nào</div>
-                        <Btn variant="primary" onClick={() => setShowVeo3NewProject(true)}><Icon.Plus /> Tạo dự án Veo3</Btn>
+                        <Btn variant="primary" disabled={!allowVeo} onClick={() => allowVeo && setShowVeo3NewProject(true)} title={allowVeo ? undefined : "License không bật Veo3"}><Icon.Plus /> Tạo dự án Veo3</Btn>
                       </div>
                       ) : (
                         veo3Projects.map(p => (
@@ -823,7 +974,7 @@ export default function App() {
                     }}>
                       <Icon.Projects/>
                       <div style={{ fontSize: 13 }}>Chưa có dự án nào</div>
-                      <Btn variant="primary" onClick={() => setShowNewProject(true)}><Icon.Plus /> Tạo dự án mới</Btn>
+                      <Btn variant="primary" disabled={!allowGrok} onClick={() => allowGrok && setShowNewProject(true)} title={allowGrok ? undefined : "License không bật Grok"}><Icon.Plus /> Tạo dự án mới</Btn>
                     </div>
                   ) : projects.map(p => (
                     <ProjectRow
@@ -845,7 +996,11 @@ export default function App() {
               }}>
                 <button
                   onClick={pushToQueue}
-                  disabled={currentSelectedIds.size === 0}
+                  disabled={
+                    currentSelectedIds.size === 0
+                    || (platform === "Veo3" && !allowVeo)
+                    || (platform === "Grok" && !allowGrok)
+                  }
                   title={platform === "Veo3" ? `Đưa ${currentSelectedIds.size} dự án Veo3 vào queue` : `Đưa ${currentSelectedIds.size} dự án vào queue`}
                   style={{
                     width: 28, height: 28, borderRadius: "50%",
@@ -915,11 +1070,6 @@ export default function App() {
             </>
           )}
 
-          {platform === "Grok" && activePanel === "accounts" && (
-            <div style={{ flex: 1 }}>
-              <AccountsPanel accounts={accounts} credFile={credFile} onLoadCred={handleLoadCred}/>
-            </div>
-          )}
           {activePanel === "guide" && (
             <div style={{ flex: 1, overflowY: "auto", padding: 16, display: "grid", gap: 14 }}>
               <div style={{ border: "1px solid var(--border)", borderRadius: 10, background: "var(--surface)", padding: 14 }}>
@@ -1054,9 +1204,9 @@ export default function App() {
               Restart to update
             </button>
           )}
-          {accounts.length > 0 && platform === "Grok" && (
+          {platform === "Grok" && activePanel === "projects" && (
             <span style={{ fontSize: 12, color: "var(--text3)" }}>
-              {readyCount}/{accounts.length} tài khoản sẵn sàng
+              Grok: {grokProfilesList.length} profiles ({grokLoggedInCount} đã đăng nhập). Nhấn &quot;Grok tài khoản&quot; trên thanh tiêu đề để mở Chrome profiles.
             </span>
           )}
           {platform === "Veo3" && activePanel === "projects" && (
@@ -1081,7 +1231,7 @@ export default function App() {
           {platform === "Grok" && activePanel === "projects" && (
             <Btn
               variant="primary"
-              disabled={!hasPendingJobs || accounts.length === 0 || isStarting}
+              disabled={!allowGrok || !hasPendingJobs || grokLoggedInCount === 0 || isStarting}
               onClick={handleStart}
               size="lg"
               style={{ minWidth: 100 }}
@@ -1099,6 +1249,7 @@ export default function App() {
           onClose={() => { setShowNewProject(false); setEditProject(null) }}
           onSave={handleSaveProject}
           initial={editProject ?? undefined}
+          scripts={scripts}
         />
       )}
       {(showVeo3NewProject || editVeo3Project) && (
@@ -1125,6 +1276,18 @@ export default function App() {
           onOpenSelected={handleVeo3OpenSelected}
           onCloseAll={handleVeo3CloseAll}
           onStatus={handleVeo3Status}
+        />
+      )}
+      {showGrokModal && (
+        <GrokProfilesModal
+          onClose={() => setShowGrokModal(false)}
+          profiles={grokProfilesList}
+          onRefresh={refreshGrokProfiles}
+          onOpenN={handleGrokOpenN}
+          onOpenSelected={handleGrokOpenSelected}
+          onCloseAll={handleGrokCloseAll}
+          onStatus={handleGrokStatus}
+          allowGrok={allowGrok}
         />
       )}
       {showScriptModal && (

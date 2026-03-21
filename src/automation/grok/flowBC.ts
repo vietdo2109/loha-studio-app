@@ -7,6 +7,7 @@ import { SELECTORS } from '../selectors'
 import { isVideoOutput } from '../types'
 import type { GrokWorkerContext, GrokJob } from './context'
 import { flowA_submit, enterPrompt } from './flowA'
+import { configureInlinePromptBar, hasInlinePromptBar } from './inlinePromptBar'
 
 const S  = SELECTORS
 const SP = SELECTORS.settingsPopover
@@ -19,6 +20,13 @@ export const STOP_AFTER_UPLOAD_WAIT_MS = 5 * 60 * 1000
 export async function runFlowB(ctx: GrokWorkerContext, job: GrokJob): Promise<void> {
   if (job.mode !== 'image-to-video') throw new Error('runFlowB: wrong mode')
 
+  const inline = await hasInlinePromptBar(ctx.page)
+
+  if (inline) {
+    ctx.emit('progress', { jobId: job.id, step: 'Cau hinh (Video, ratio, res)...', percent: 12 })
+    await configureInlinePromptBar(ctx, job)
+  }
+
   ctx.emit('progress', { jobId: job.id, step: 'Upload anh...', percent: 15 })
   await uploadImages(ctx, [(job as { imagePath: string }).imagePath])
 
@@ -28,20 +36,33 @@ export async function runFlowB(ctx: GrokWorkerContext, job: GrokJob): Promise<vo
     throw new Error('Stopped for DOM inspection — update selectors and set STOP_AFTER_IMAGE_UPLOAD=false')
   }
 
-  ctx.emit('progress', { jobId: job.id, step: 'Chon Make Video...', percent: 28 })
-  await openSettingsAndSelect(ctx, job, SI.makeVideoFromImageModeBtn, 'Make Video', { skipRatioResolution: true })
+  if (!inline) {
+    ctx.emit('progress', { jobId: job.id, step: 'Chon Make Video...', percent: 28 })
+    await openSettingsAndSelect(ctx, job, SI.makeVideoFromImageModeBtn, 'Make Video', { skipRatioResolution: true })
+  }
 
   ctx.emit('progress', { jobId: job.id, step: 'Nhap prompt...', percent: 40 })
   await enterPrompt(ctx, job.prompt)
 
   ctx.emit('progress', { jobId: job.id, step: 'Submit...', percent: 50 })
-  await flowB_submit(ctx)
+  if (inline) {
+    await flowA_submit(ctx)
+  } else {
+    await flowB_submit(ctx)
+  }
 }
 
 export async function runFlowC(ctx: GrokWorkerContext, job: GrokJob): Promise<void> {
   if (job.mode !== 'images-to-image') throw new Error('runFlowC: wrong mode')
 
   const imagePaths = (job as { imagePaths: string[] }).imagePaths
+  const inline = await hasInlinePromptBar(ctx.page)
+
+  if (inline) {
+    ctx.emit('progress', { jobId: job.id, step: 'Cau hinh (Image, ratio)...', percent: 12 })
+    await configureInlinePromptBar(ctx, job)
+  }
+
   ctx.emit('progress', { jobId: job.id, step: `Upload ${imagePaths.length} anh...`, percent: 15 })
   await uploadImages(ctx, imagePaths)
 
@@ -51,8 +72,10 @@ export async function runFlowC(ctx: GrokWorkerContext, job: GrokJob): Promise<vo
     throw new Error('Stopped for DOM inspection — update selectors and set STOP_AFTER_IMAGE_UPLOAD=false')
   }
 
-  ctx.emit('progress', { jobId: job.id, step: 'Chon Edit Image...', percent: 28 })
-  await openSettingsAndSelect(ctx, job, SI.makeImageFromImageModeBtn, 'Edit Image')
+  if (!inline) {
+    ctx.emit('progress', { jobId: job.id, step: 'Chon Edit Image...', percent: 28 })
+    await openSettingsAndSelect(ctx, job, SI.makeImageFromImageModeBtn, 'Edit Image')
+  }
 
   ctx.emit('progress', { jobId: job.id, step: 'Nhap prompt...', percent: 40 })
   await enterPrompt(ctx, job.prompt)
@@ -65,7 +88,23 @@ export async function uploadImages(ctx: GrokWorkerContext, imagePaths: string[])
   const { page, log, waitStable } = ctx
   const valid = imagePaths.filter(p => p && fs.existsSync(p))
   if (valid.length === 0) throw new Error(`Không tìm thấy file ảnh: ${imagePaths.join(', ')}`)
-  const fileInput = page.locator(S.upload.fileInput)
+
+  let fileInput = page.locator(S.upload.fileInputQueryBar).first()
+  if (await fileInput.count() === 0) {
+    fileInput = page.locator(S.upload.fileInput).first()
+  }
+  if (await fileInput.count() === 0) {
+    await page.click(S.prompt.attachBtn)
+    await waitStable()
+    fileInput = page.locator(S.upload.fileInputQueryBar).first()
+    if (await fileInput.count() === 0) {
+      fileInput = page.locator(S.upload.fileInput).first()
+    }
+  }
+  if (await fileInput.count() === 0) {
+    throw new Error('Không tìm thấy input file sau khi mở Attach')
+  }
+
   await fileInput.setInputFiles(valid.slice(0, 3))
   await waitStable()
   log('info', `Upload: ${valid.map(p => path.basename(p)).join(', ')}`)

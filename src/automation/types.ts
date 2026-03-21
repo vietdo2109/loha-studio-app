@@ -2,6 +2,8 @@
 
 export type AspectRatio = '16:9' | '9:16' | '1:1' | '2:3' | '3:2'
 export type Resolution  = '480p' | '720p'
+/** Inline video bar (03/2026): 6s | 10s */
+export type Duration = '6s' | '10s'
 
 /**
  * Mode xác định flow nào sẽ được chạy trong BrowserWorker:
@@ -57,6 +59,7 @@ export interface PromptToVideoJob extends BaseJob {
 export interface ImageToVideoJob extends BaseJob {
   mode:       'image-to-video'
   resolution: Resolution
+  duration?:  Duration
   imagePath:  string            // đúng 1 ảnh
 }
 

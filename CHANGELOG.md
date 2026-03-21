@@ -1,5 +1,30 @@
 # Changelog
 
+## [1.2.0] - 2026-03-10
+
+### Added (Grok Imagine)
+
+- **Inline prompt bar** (03/2026 UI): Generation mode Image/Video, Aspect Ratio menu, Video resolution & duration — automation in `inlinePromptBar.ts`; legacy Settings popover kept as fallback.
+- **Kịch bản (scripts)**: Giống Veo3 — 1 kịch bản + nhiều ảnh, mỗi ảnh chạy hết prompt; `imageIndex` trên job; nút **Thêm/sửa kịch bản** trên màn Grok.
+- **Grok profiles**: Modal quản lý Chrome profiles (mở/đóng, đăng nhập grok.com/imagine).
+- Selector **`.query-bar`** cho upload ảnh; reload trang Imagine trước mỗi job khi đã mở tab (tránh state/preview lệch giữa nhiều profile).
+
+### Changed (Grok UI)
+
+- **Loại output** chỉ còn **Image / Video**; `deriveGrokProjectMode()` suy ra mode (prompt / animate / edit) từ output + folder ảnh — bỏ dropdown Mode riêng.
+- **Folder ảnh**: cùng pattern Input + **Chọn** (Folder) như thư mục tải về.
+- **Prompt**: nhập nhanh bằng `fill` / `insertText` thay vì gõ từng ký tự.
+- Queue **run-queue**: mutex `shift()` cho job; `duration` cho image-to-video.
+
+### Changed (Veo3 UI only)
+
+- Modal dự án Veo3: chọn kịch bản bằng **dropdown** thay cho radio.
+
+### Fixed
+
+- **Grok** `flowA_configureSettings`: ưu tiên thanh inline trước Settings cũ.
+- **Grok** `runFlowC`: nhánh inline (Image + ratio trước upload, bỏ menu Edit Image cũ khi có thanh inline).
+
 ## [1.1.2] - 2026-03-20
 
 ### Fixed

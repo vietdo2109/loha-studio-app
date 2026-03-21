@@ -16,7 +16,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Session
   startSession: (config: any) => ipcRenderer.invoke('start-session', config),
   stopSession:  ()             => ipcRenderer.invoke('stop-session'),
-  openProfiles: (credentialsPath: string) => ipcRenderer.invoke('open-profiles', credentialsPath),
   runQueue:     (queue: any[]) => ipcRenderer.invoke('run-queue', queue),
   appendQueue: (queueAddition: any[]) => ipcRenderer.invoke('append-queue', queueAddition),
 
@@ -33,6 +32,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // Events: Main → Renderer
   onAccountStatus: (cb: (e: any, d: any) => void) => ipcRenderer.on('account-status', cb),
+  onGrokCreateProgress: (cb: (e: any, d: { index: number; profileId: string; step: string; percent: number }) => void) =>
+    ipcRenderer.on('grok-create-progress', cb),
   onJobProgress:   (cb: (e: any, d: any) => void) => ipcRenderer.on('job-progress',   cb),
   onJobCompleted:  (cb: (e: any, d: any) => void) => ipcRenderer.on('job-completed',  cb),
   onJobFailed:     (cb: (e: any, d: any) => void) => ipcRenderer.on('job-failed',     cb),
@@ -41,6 +42,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onAppUpdateStatus: (cb: (e: any, d: any) => void) => ipcRenderer.on('app-update-status', cb),
 
   removeAllListeners: (channel: string) => ipcRenderer.removeAllListeners(channel),
+
+  // Grok persistent profiles (same disk model as Veo3)
+  grokListProfiles: () => ipcRenderer.invoke('grok-list-profiles'),
+  grokOpenProfiles: (count: number) => ipcRenderer.invoke('grok-open-profiles', count),
+  grokOpenSelectedProfiles: (profileIds: string[]) => ipcRenderer.invoke('grok-open-selected-profiles', profileIds),
+  grokCloseAll: () => ipcRenderer.invoke('grok-close-all'),
+  onGrokProfileStatus: (cb: (e: any, d: { profileId: string; loggedIn: boolean; email?: string; error?: string }) => void) =>
+    ipcRenderer.on('grok-profile-status', cb),
 
   // Veo3 (Google Flow) profiles
   veo3ListProfiles: () => ipcRenderer.invoke('veo3-list-profiles'),

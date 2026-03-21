@@ -5,11 +5,23 @@ export type Resolution  = "480p" | "720p"
 export type Duration    = "6s" | "10s"
 export type MediaType   = "Image" | "Video"
 export type JobStatus   = "pending" | "running" | "done" | "failed"
+
+/**
+ * Suy ra Mode lưu trong Project từ **Loại output** + có/không folder ảnh (UI không còn chọn Mode riêng).
+ * - Không chọn folder ảnh → prompt_only (chỉ prompt → Image hoặc Video tùy mediaType)
+ * - Có folder + Video → animate_image
+ * - Có folder + Image → edit_image
+ */
+export function deriveGrokProjectMode(mediaType: MediaType, imageDir: string): Mode {
+  const has = imageDir.trim().length > 0
+  if (!has) return "prompt_only"
+  return mediaType === "Video" ? "animate_image" : "edit_image"
+}
 export type AcctStatus  = "idle" | "logging_in" | "ready" | "failed" | "running"
-export type AppPanel    = "projects" | "accounts" | "guide"
+export type AppPanel    = "projects" | "guide"
 
 // ─── Grok project (grok.com/imagine) ─────────────────────────────────────────
-// One project = one "video" with many prompts; mode = prompt_only | edit_image | animate_image
+// mode: suy ra từ mediaType + imageDir (deriveGrokProjectMode), dùng cho queue/build job
 
 export interface Project {
   id:          string
@@ -23,6 +35,12 @@ export interface Project {
   prompts:     string[]
   imageDir:    string
   createdAt:   number
+  /**
+   * Giống Veo3: prompts lấy từ kịch bản đã lưu.
+   * Với edit_image / animate_image: 1 kịch bản + nhiều ảnh → mỗi ảnh chạy hết prompt trong kịch bản (imageIndex trên QueueJob).
+   */
+  useScripts?: boolean
+  scriptIds?: string[]
 }
 
 export interface QueueJob {
@@ -33,6 +51,8 @@ export interface QueueJob {
   progress: number
   accountId?: string
   error?:   string
+  /** Chế độ kịch bản + nhiều ảnh: ảnh thứ imageIndex trong folder (0-based), giống Veo3 */
+  imageIndex?: number
 }
 
 export interface QueueProject extends Project {
@@ -111,6 +131,8 @@ export interface Account {
   email:   string
   status:  AcctStatus
   error?:  string
+  /** Auto-create: current step label from main */
+  progressLabel?: string
 }
 
 // ─── Script (set of prompts for Veo3; 1 image per script) ────────────────────

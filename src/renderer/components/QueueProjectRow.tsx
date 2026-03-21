@@ -64,7 +64,11 @@ export function QueueProjectRow({ qp, onToggle, onJobClick }: { qp: QueueProject
                 <Icon.Dot color={jdot[job.status]}/>
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontSize: 12, color: "var(--text2)", marginBottom: 3, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    #{job.index + 1} — {job.prompt.slice(0, 60)}{job.prompt.length > 60 ? "…" : ""}
+                    #{job.index + 1}
+                    {job.imageIndex != null && (
+                      <span style={{ color: "var(--accent)" }}> · ảnh {job.imageIndex + 1}</span>
+                    )}
+                    {" — "}{job.prompt.slice(0, 60)}{job.prompt.length > 60 ? "…" : ""}
                   </div>
                   {job.status === "pending" ? (
                     <span style={{ fontSize: 11, color: "var(--text3)" }}>Chờ xử lý</span>

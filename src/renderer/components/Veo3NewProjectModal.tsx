@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import type { Veo3Project, Veo3VideoMode, Veo3Multiplier, Veo3AiModel, Veo3ImageModel, Veo3DownloadResolution, Veo3ImageDownloadResolution, Veo3GenerationMode, Script } from '../types'
-import { Modal, ModalRow, ModalLabel, Btn, Input, Checkbox } from './ui'
+import { Modal, ModalRow, ModalLabel, Btn, Input, Checkbox, Select } from './ui'
 import { Icon } from './icons'
 
 export function Veo3NewProjectModal({ onClose, onSave, initial, scripts = [] }: {
@@ -34,7 +34,7 @@ export function Veo3NewProjectModal({ onClose, onSave, initial, scripts = [] }: 
   const [promptText, setPromptText] = useState(initial && !initial.useScripts ? initial.prompts.join("\n\n") : "")
   const [startFramesDir, setStartFramesDir] = useState(initial?.startFramesDir ?? initial?.imageDir ?? "")
   const [useScripts, setUseScripts] = useState(!!(initial?.useScripts && initial?.scriptIds?.length))
-  const [selectedScriptIds, setSelectedScriptIds] = useState<Set<string>>(new Set(initial?.scriptIds ?? []))
+  const [selectedScriptId, setSelectedScriptId] = useState(initial?.scriptIds?.[0] ?? '')
 
   useEffect(() => {
     if (initial) {
@@ -49,7 +49,7 @@ export function Veo3NewProjectModal({ onClose, onSave, initial, scripts = [] }: 
       setImageDownloadResolution(initial.imageDownloadResolution ?? '2k')
       setStartFramesDir(initial.startFramesDir ?? initial.imageDir ?? "")
       setUseScripts(!!(initial.useScripts && initial.scriptIds?.length))
-      setSelectedScriptIds(new Set(initial.scriptIds?.length ? [initial.scriptIds[0]] : []))
+      setSelectedScriptId(initial.scriptIds?.[0] ?? '')
       if (!initial.useScripts) setPromptText(initial.prompts.join("\n\n"))
     }
   }, [initial?.id])
@@ -71,11 +71,10 @@ export function Veo3NewProjectModal({ onClose, onSave, initial, scripts = [] }: 
 
   const promptsFromText = promptText.split(/\n\s*\n/).map(p => p.trim()).filter(Boolean)
   const scriptsNewestFirst = [...scripts].sort((a, b) => Number(b.id) - Number(a.id))
-  const promptsFromScripts = useScripts && selectedScriptIds.size > 0
-    ? scriptsNewestFirst.filter(s => selectedScriptIds.has(s.id)).flatMap(s => s.prompts)
-    : []
+  const selectedScript = scriptsNewestFirst.find(s => s.id === selectedScriptId)
+  const promptsFromScripts = useScripts && selectedScript ? selectedScript.prompts : []
   const prompts = useScripts ? promptsFromScripts : promptsFromText
-  const valid = name.trim() && outputDir && prompts.length > 0 && (!useScripts || selectedScriptIds.size > 0)
+  const valid = name.trim() && outputDir && prompts.length > 0 && (!useScripts || !!selectedScriptId)
 
   const handleSave = () => {
     if (!valid) return
@@ -94,9 +93,9 @@ export function Veo3NewProjectModal({ onClose, onSave, initial, scripts = [] }: 
       startFramesDir: startFramesDir || undefined,
       endFramesDir: undefined,
       ...(startFramesDir && { imageDir: startFramesDir }),
-      ...(useScripts && selectedScriptIds.size > 0 && {
+      ...(useScripts && selectedScriptId && {
         useScripts: true,
-        scriptIds: [Array.from(selectedScriptIds)[0]],
+        scriptIds: [selectedScriptId],
       }),
     }
     if (isEdit && initial) {
@@ -347,22 +346,29 @@ export function Veo3NewProjectModal({ onClose, onSave, initial, scripts = [] }: 
           </span>
         </div>
         {useScripts ? (
-          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {scripts.length === 0 ? (
-              <div style={{ fontSize: 12, color: "var(--text3)" }}>Chưa có kịch bản. Tạo kịch bản trước (Thêm kịch bản).</div>
+              <div style={{ fontSize: 12, color: "var(--text3)" }}>Chưa có kịch bản. Dùng nút &quot;Thêm/sửa kịch bản&quot; trên màn hình dự án.</div>
             ) : (
-              scriptsNewestFirst.map(s => (
-                <div key={s.id} style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                  <input
-                    type="radio"
-                    name="veo3-script"
-                    checked={selectedScriptIds.has(s.id)}
-                    onChange={() => setSelectedScriptIds(new Set([s.id]))}
-                  />
-                  <span style={{ fontSize: 13 }}>{s.name}</span>
-                  <span style={{ fontSize: 11, color: "var(--text3)" }}>({s.prompts.length} prompt{s.prompts.length !== 1 ? "s" : ""})</span>
-                </div>
-              ))
+              <>
+                <ModalLabel>Kịch bản</ModalLabel>
+                <Select
+                  value={selectedScriptId}
+                  onChange={setSelectedScriptId}
+                  options={[
+                    { value: '', label: '— Chọn kịch bản —' },
+                    ...scriptsNewestFirst.map(s => ({
+                      value: s.id,
+                      label: `${s.name} (${s.prompts.length} prompt${s.prompts.length !== 1 ? 's' : ''})`,
+                    })),
+                  ]}
+                />
+                {selectedScript && (
+                  <div style={{ fontSize: 11, color: "var(--text3)" }}>
+                    Đã chọn: <b>{selectedScript.name}</b> — {selectedScript.prompts.length} prompt
+                  </div>
+                )}
+              </>
             )}
             {prompts.length > 0 && (
               <div style={{ marginTop: 4, fontSize: 11, color: "var(--text3)" }}>

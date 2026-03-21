@@ -6,13 +6,14 @@
  *   select-directory        → folder picker
  *   select-text-file        → .txt file picker, returns content
  *   select-images           → image file picker, returns paths[]
- *   select-credentials-file → .txt picker, returns { path, credentials[] }
- *   open-profiles           → launch browsers + login; keep profiles open (no queue)
- *   run-queue               → run job queue with already-open profiles
- *   stop-session            → close all profiles (and abort if queue is running)
+ *   select-credentials-file → .txt picker (optional / legacy)
+ *   grok-list-profiles / grok-open-profiles / grok-open-selected-profiles / grok-close-all
+ *   run-queue               → job queue (Grok profiles must be open + logged in)
+ *   stop-session            → abort running queue (does not close Grok browsers)
  *
  * Events emitted to renderer:
  *   account-status  { accountId, status, email, error? }
+ *   grok-profile-status { profileId, loggedIn, email?, error? }
  *   job-progress    { projectId, jobId, progress }
  *   job-completed   { projectId, jobId, outputPath }
  *   job-failed      { projectId, jobId, error }
@@ -26,8 +27,8 @@ import os from 'os'
 import { machineIdSync } from 'node-machine-id'
 import { autoUpdater } from 'electron-updater'
 import { chromium, BrowserContext, Page } from 'patchright'
-import { BrowserWorker }                       from '../automation/BrowserWorker'
-import { AccountLogin, parseCredentialsFile } from '../automation/AccountLogin'
+import { BrowserWorker } from '../automation/BrowserWorker'
+import { parseCredentialsFile } from '../automation/AccountLogin'
 import { resolveImageForIndex, resolveImagesForIndex, resolveAllImagePathsFromDir, listImagePathsFromDir } from '../automation/inputParser'
 import { initAppLogger, appLog, getLogDirectory } from './logger'
 import { runVeo3CreateVideoFlow, runVeo3ProjectFlow, runVeo3ProjectFlowByGroups } from '../automation/veo3Flow'
@@ -65,6 +66,10 @@ interface LicenseActivationStatus {
   deviceId?: string
   apiBaseUrl?: string
   adminUrl?: string
+  /** From server; if missing (old cache), treat as true for Veo/Grok — false only for Sora */
+  veoActive?: boolean
+  grokActive?: boolean
+  soraActive?: boolean
 }
 
 interface LicenseServerInfo {
@@ -73,6 +78,9 @@ interface LicenseServerInfo {
   keyCode?: string
   role?: LicenseRole
   expiresAt: number
+  veoActive?: boolean
+  grokActive?: boolean
+  soraActive?: boolean
 }
 
 interface LicenseStateFile {
@@ -80,6 +88,15 @@ interface LicenseStateFile {
   deviceId?: string
   lastCheckedAt?: number
   license?: LicenseServerInfo
+}
+
+function licenseFeatureFlags(license: LicenseServerInfo | undefined): Pick<LicenseActivationStatus, 'veoActive' | 'grokActive' | 'soraActive'> {
+  if (!license) return { veoActive: false, grokActive: false, soraActive: false }
+  return {
+    veoActive: license.veoActive !== false,
+    grokActive: license.grokActive !== false,
+    soraActive: license.soraActive === true,
+  }
 }
 
 function getLicenseStatePath(): string {
@@ -175,6 +192,7 @@ function getCachedActivationStatus(): LicenseActivationStatus {
     deviceId,
     apiBaseUrl: LICENSE_API_BASE_URL,
     adminUrl: LICENSE_ADMIN_URL,
+    ...licenseFeatureFlags(license),
   }
 }
 
@@ -218,6 +236,40 @@ function requireActivationForAction(actionName: string):
   if (status.activated) return { ok: true }
   appLog('warn', `Blocked action without activation: ${actionName} (${status.reason ?? 'UNKNOWN'})`, 'license')
   return { ok: false, error: 'Ứng dụng chưa kích hoạt hợp lệ hoặc đã hết hạn. Vui lòng kích hoạt online.' }
+}
+
+type LicenseFeature = 'veo' | 'grok' | 'sora'
+
+/** Block automation for AI products not enabled on this license (server flags). */
+function requireLicenseFeature(feature: LicenseFeature, actionName: string):
+  | { ok: true }
+  | { ok: false; error: string } {
+  const base = requireActivationForAction(actionName)
+  if (!base.ok) return base
+  const status = getCachedActivationStatus()
+  if (!status.activated) return base
+  if (feature === 'veo' && status.veoActive === false) {
+    appLog('warn', `Blocked ${actionName}: Veo3 not enabled on license`, 'license')
+    return {
+      ok: false,
+      error: 'License này không bật Veo3 (Google Flow). Liên hệ admin để bật trên key của bạn.',
+    }
+  }
+  if (feature === 'grok' && status.grokActive === false) {
+    appLog('warn', `Blocked ${actionName}: Grok not enabled on license`, 'license')
+    return {
+      ok: false,
+      error: 'License này không bật Grok Imagine. Liên hệ admin để bật trên key của bạn.',
+    }
+  }
+  if (feature === 'sora' && status.soraActive !== true) {
+    appLog('warn', `Blocked ${actionName}: Sora not enabled on license`, 'license')
+    return {
+      ok: false,
+      error: 'License này không bật Sora. Liên hệ admin để bật trên key của bạn.',
+    }
+  }
+  return { ok: true }
 }
 
 function formatUpdaterError(err: unknown): { userMessage: string; raw: string } {
@@ -538,69 +590,245 @@ ipcMain.handle('license-open-admin', async () => {
   return { success: true }
 })
 
-// ─── Session state ────────────────────────────────────────────────────────────
+// ─── Session / Grok queue state ───────────────────────────────────────────────
 
-interface SessionAccount {
-  id:        string
-  email:     string
-  password:  string
-  ctx?:      BrowserContext
+let sessionAborted = false
+const PROFILES_DIR = path.resolve('./profiles')
+
+// ─── Grok (grok.com/imagine) persistent profiles — same model as Veo3 ─────────
+// profiles/grok/profile-001 … status.json { loggedIn, email? }
+
+const GROK_PROFILES_DIR = path.join(PROFILES_DIR, 'grok')
+const GROK_IMAGINE_URL = 'https://grok.com/imagine'
+const GROK_STATUS_FILE = 'status.json'
+const GROK_POLL_INTERVAL_MS = 6000
+const GROK_FIRST_POLL_DELAY_MS = 5000
+
+const GROK_LOGGED_IN_SELECTORS = [
+  '[data-sidebar="footer"] button[aria-haspopup="menu"]',
+  '[data-sidebar="sidebar"] button[aria-haspopup="menu"]',
+]
+
+interface GrokProfileEntry {
+  profileId: string
+  profileDir: string
+  ctx?: BrowserContext
+  page?: Page
+  loggedIn?: boolean
+}
+
+let grokProfiles: GrokProfileEntry[] = []
+
+function getGrokProfileDirByIndex(index: number): string {
+  return path.join(GROK_PROFILES_DIR, `profile-${String(index).padStart(3, '0')}`)
+}
+
+function getGrokProfileDirById(profileId: string): string {
+  return path.join(GROK_PROFILES_DIR, profileId)
+}
+
+function readGrokStatus(profileDir: string): { loggedIn: boolean; email?: string } | null {
+  const fp = path.join(profileDir, GROK_STATUS_FILE)
+  if (!fs.existsSync(fp)) return null
+  try {
+    const j = JSON.parse(fs.readFileSync(fp, 'utf-8'))
+    return { loggedIn: !!j.loggedIn, email: j.email }
+  } catch {
+    return null
+  }
+}
+
+function writeGrokStatus(profileDir: string, loggedIn: boolean, email?: string): void {
+  const fp = path.join(profileDir, GROK_STATUS_FILE)
+  fs.mkdirSync(profileDir, { recursive: true })
+  fs.writeFileSync(fp, JSON.stringify({ loggedIn, ...(email != null && { email }) }), 'utf-8')
+}
+
+function removeGrokEntry(profileId: string): void {
+  const idx = grokProfiles.findIndex(v => v.profileId === profileId)
+  if (idx >= 0) {
+    const profileDir = grokProfiles[idx].profileDir
+    grokProfiles.splice(idx, 1)
+    writeGrokStatus(profileDir, false)
+    send('grok-profile-status', { profileId, loggedIn: false })
+  }
+}
+
+function pruneClosedGrokProfiles(): void {
+  const closed: string[] = []
+  for (const v of grokProfiles) {
+    try {
+      if (v.page?.isClosed?.()) closed.push(v.profileId)
+    } catch {
+      closed.push(v.profileId)
+    }
+  }
+  for (const id of closed) removeGrokEntry(id)
+}
+
+async function isGrokPageLoggedIn(page: Page): Promise<boolean> {
+  for (const sel of GROK_LOGGED_IN_SELECTORS) {
+    try {
+      const visible = await page.locator(sel).first().isVisible({ timeout: 2000 })
+      if (visible) return true
+    } catch {
+      continue
+    }
+  }
+  return false
+}
+
+async function pollGrokLoginState(profileId: string, profileDir: string, page: Page | null): Promise<void> {
+  if (!page) {
+    send('grok-profile-status', { profileId, loggedIn: false })
+    return
+  }
+  try {
+    const loggedIn = await isGrokPageLoggedIn(page)
+    const entry = grokProfiles.find(v => v.profileId === profileId)
+    if (entry) entry.loggedIn = loggedIn
+    const st = readGrokStatus(profileDir)
+    const email = st?.email
+    if (loggedIn) {
+      writeGrokStatus(profileDir, true, email)
+      send('grok-profile-status', { profileId, loggedIn: true, email })
+    } else {
+      writeGrokStatus(profileDir, false)
+      send('grok-profile-status', { profileId, loggedIn: false })
+    }
+  } catch {
+    const entry = grokProfiles.find(v => v.profileId === profileId)
+    if (entry) entry.loggedIn = false
+    send('grok-profile-status', { profileId, loggedIn: false })
+  }
+}
+
+interface GrokWorkerAccount {
+  id: string
+  email: string
+  ctx: BrowserContext
   profileDir: string
 }
 
-let sessionAccounts: SessionAccount[] = []
-let sessionAborted  = false
-const PROFILES_DIR  = path.resolve('./profiles')
+function getGrokReadyWorkers(): GrokWorkerAccount[] {
+  pruneClosedGrokProfiles()
+  return grokProfiles
+    .filter(v => v.ctx && v.loggedIn)
+    .map(v => {
+      const st = readGrokStatus(v.profileDir)
+      return {
+        id: v.profileId,
+        email: st?.email ?? v.profileId,
+        profileDir: v.profileDir,
+        ctx: v.ctx!,
+      }
+    })
+}
+
+ipcMain.handle('grok-list-profiles', async () => {
+  if (!fs.existsSync(GROK_PROFILES_DIR)) {
+    return { profiles: [] as { profileId: string; profileDir: string; loggedIn: boolean; email?: string }[] }
+  }
+  const dirs = fs.readdirSync(GROK_PROFILES_DIR, { withFileTypes: true })
+    .filter(d => d.isDirectory() && /^profile-\d{3}$/.test(d.name))
+    .sort((a, b) => a.name.localeCompare(b.name))
+  const profiles = dirs.map(d => {
+    const profileDir = path.join(GROK_PROFILES_DIR, d.name)
+    const profileId = d.name
+    const status = readGrokStatus(profileDir)
+    return { profileId, profileDir, loggedIn: status?.loggedIn ?? false, email: status?.email }
+  })
+  return { profiles }
+})
+
+ipcMain.handle('grok-open-profiles', async (_event, count: number) => {
+  const gate = requireLicenseFeature('grok', 'grok-open-profiles')
+  if (!gate.ok) return { opened: 0, success: false, error: gate.error }
+
+  const n = Math.min(Math.max(1, Math.floor(count)), 20)
+  fs.mkdirSync(GROK_PROFILES_DIR, { recursive: true })
+
+  for (let i = 1; i <= n; i++) {
+    const profileId = `profile-${String(i).padStart(3, '0')}`
+    const profileDir = getGrokProfileDirByIndex(i)
+    if (grokProfiles.some(v => v.profileId === profileId && v.ctx)) {
+      continue
+    }
+    fs.mkdirSync(profileDir, { recursive: true })
+    try {
+      const ctx = await chromium.launchPersistentContext(profileDir, {
+        channel:  'chrome',
+        headless: false,
+        acceptDownloads: true,
+        viewport: { width: 1280, height: 700 },
+        args:     ['--no-sandbox'],
+      })
+      const page = await ctx.newPage()
+      await page.goto(GROK_IMAGINE_URL, { waitUntil: 'domcontentloaded' })
+      const status = readGrokStatus(profileDir)
+      const entry: GrokProfileEntry = { profileId, profileDir, ctx, page, loggedIn: status?.loggedIn ?? false }
+      grokProfiles.push(entry)
+      ctx.on('close', () => removeGrokEntry(profileId))
+      send('grok-profile-status', { profileId, loggedIn: status?.loggedIn ?? false, email: status?.email })
+      const poll = () => pollGrokLoginState(profileId, profileDir, entry.page ?? null)
+      setTimeout(poll, GROK_FIRST_POLL_DELAY_MS)
+      setInterval(poll, GROK_POLL_INTERVAL_MS)
+    } catch (err: any) {
+      appLog('error', `Grok open profile ${profileId}: ${err.message}`, 'main')
+      send('grok-profile-status', { profileId, loggedIn: false, error: err.message })
+    }
+  }
+  return { opened: n }
+})
+
+ipcMain.handle('grok-open-selected-profiles', async (_event, profileIds: string[]) => {
+  const gate = requireLicenseFeature('grok', 'grok-open-selected-profiles')
+  if (!gate.ok) return { opened: 0, success: false, error: gate.error }
+
+  if (!Array.isArray(profileIds) || profileIds.length === 0) return { opened: 0 }
+  fs.mkdirSync(GROK_PROFILES_DIR, { recursive: true })
+  let opened = 0
+  for (const profileId of profileIds) {
+    if (!/^profile-\d{3}$/.test(profileId)) continue
+    const profileDir = getGrokProfileDirById(profileId)
+    if (grokProfiles.some(v => v.profileId === profileId && v.ctx)) continue
+    fs.mkdirSync(profileDir, { recursive: true })
+    try {
+      const ctx = await chromium.launchPersistentContext(profileDir, {
+        channel:  'chrome',
+        headless: false,
+        acceptDownloads: true,
+        viewport: { width: 1280, height: 700 },
+        args:     ['--no-sandbox'],
+      })
+      const page = await ctx.newPage()
+      await page.goto(GROK_IMAGINE_URL, { waitUntil: 'domcontentloaded' })
+      const status = readGrokStatus(profileDir)
+      const entry: GrokProfileEntry = { profileId, profileDir, ctx, page, loggedIn: status?.loggedIn ?? false }
+      grokProfiles.push(entry)
+      ctx.on('close', () => removeGrokEntry(profileId))
+      opened += 1
+      send('grok-profile-status', { profileId, loggedIn: status?.loggedIn ?? false, email: status?.email })
+      const poll = () => pollGrokLoginState(profileId, profileDir, entry.page ?? null)
+      setTimeout(poll, GROK_FIRST_POLL_DELAY_MS)
+      setInterval(poll, GROK_POLL_INTERVAL_MS)
+    } catch (err: any) {
+      appLog('error', `Grok open profile ${profileId}: ${err.message}`, 'main')
+      send('grok-profile-status', { profileId, loggedIn: false, error: err.message })
+    }
+  }
+  return { opened }
+})
+
+ipcMain.handle('grok-close-all', async () => {
+  for (const v of grokProfiles) {
+    v.ctx?.close().catch(() => {})
+  }
+  grokProfiles = []
+})
 
 ipcMain.handle('stop-session', () => {
   sessionAborted = true
-  for (const acct of sessionAccounts) {
-    acct.ctx?.close().catch(() => {})
-  }
-  sessionAccounts = []
-})
-
-// ─── IPC: Open profiles (launch + login only, wait for queue) ─────────────────
-
-ipcMain.handle('open-profiles', async (_event, credentialsPath: string) => {
-  const gate = requireActivationForAction('open-profiles')
-  if (!gate.ok) return { success: false, readyCount: 0, error: gate.error }
-
-  sessionAborted = false
-  sessionAccounts = []
-
-  let credentials: { email: string; password: string }[]
-  try {
-    credentials = parseCredentialsFile(credentialsPath)
-  } catch (err: any) {
-    appLog('error', `Credentials: ${err.message}`, 'main')
-    return { success: false, readyCount: 0, error: `Không đọc được file credentials: ${err.message}` }
-  }
-
-  const sessionDir = path.join(PROFILES_DIR, `session-${Date.now()}`)
-  fs.mkdirSync(sessionDir, { recursive: true })
-
-  sessionAccounts = credentials.map((c, i) => ({
-    id:         `acct-${i}`,
-    email:      c.email,
-    password:   c.password,
-    profileDir: path.join(sessionDir, `account-${String(i + 1).padStart(3, '0')}`),
-  }))
-
-  await Promise.allSettled(
-    sessionAccounts.map((acct, i) => loginAccount(acct, i))
-  )
-
-  if (sessionAborted) return { success: false, readyCount: 0, error: 'Đã dừng' }
-
-  const readyCount = sessionAccounts.filter(a => a.ctx).length
-  if (readyCount === 0) {
-    appLog('error', 'No account logged in successfully', 'main')
-    return { success: false, readyCount: 0, error: 'Không có tài khoản nào đăng nhập thành công' }
-  }
-
-  appLog('info', `Profiles open: ${readyCount} accounts ready — add jobs and click Run queue`, 'main')
-  return { success: true, readyCount }
 })
 
 // ─── IPC: Run queue (profiles must already be open) ───────────────────────────
@@ -618,6 +846,8 @@ interface FlatJob {
   resolution:  string
   duration:    string
   imageDir?:   string
+  /** 1 kịch bản + nhiều ảnh: chỉ số ảnh trong folder (0-based), giống Veo3 */
+  imageIndex?: number
 }
 
 function buildFlatJobs(queue: any[]): FlatJob[] {
@@ -637,6 +867,7 @@ function buildFlatJobs(queue: any[]): FlatJob[] {
         resolution:  project.resolution,
         duration:    project.duration,
         imageDir:    project.imageDir,
+        imageIndex:  job.imageIndex,
       })
     }
   }
@@ -647,12 +878,12 @@ function buildFlatJobs(queue: any[]): FlatJob[] {
 let sharedJobQueue: FlatJob[] = []
 
 ipcMain.handle('run-queue', async (_event, queue: any[]) => {
-  const gate = requireActivationForAction('run-queue')
+  const gate = requireLicenseFeature('grok', 'run-queue')
   if (!gate.ok) return { success: false, error: gate.error }
 
-  const readyAccounts = sessionAccounts.filter(a => a.ctx)
+  const readyAccounts = getGrokReadyWorkers()
   if (readyAccounts.length === 0) {
-    return { success: false, error: 'Chưa mở profiles. Nhấn Start trước.' }
+    return { success: false, error: 'Chưa có profile Grok đang mở và đã đăng nhập. Vào Grok tài khoản → mở profile và đăng nhập grok.com/imagine.' }
   }
 
   const flatJobs = buildFlatJobs(queue)
@@ -661,8 +892,8 @@ ipcMain.handle('run-queue', async (_event, queue: any[]) => {
   }
 
   sessionAborted = false
-  let jobIndex = 0
-  const jobsMutex = { next: () => flatJobs[jobIndex++] }
+  const pendingJobs = [...flatJobs]
+  const jobsMutex = { next: () => pendingJobs.shift() ?? null }
   let successCount = 0
   let failedCount  = 0
 
@@ -691,7 +922,12 @@ ipcMain.handle('run-queue', async (_event, queue: any[]) => {
 
 // Append jobs to the running queue (call while session is running; new jobs run after current ones)
 ipcMain.handle('append-queue', (_event, queueAddition: any[]) => {
-  if (sessionAccounts.length === 0) return
+  const gate = requireLicenseFeature('grok', 'append-queue')
+  if (!gate.ok) {
+    appLog('warn', `append-queue blocked: ${gate.error}`, 'license')
+    return
+  }
+  if (getGrokReadyWorkers().length === 0) return
   const added = buildFlatJobs(queueAddition)
   sharedJobQueue.push(...added)
   appLog('info', `Appended ${added.length} jobs to queue (total tail)`, 'main')
@@ -699,48 +935,20 @@ ipcMain.handle('append-queue', (_event, queueAddition: any[]) => {
 
 // ─── start-session: open profiles + run queue (single flow). Queue can be appended during run via append-queue.
 
-ipcMain.handle('start-session', async (_event, config: {
-  credentialsPath: string
-  queue: any[]
-}) => {
-  const gate = requireActivationForAction('start-session')
+ipcMain.handle('start-session', async (_event, config: { queue: any[] }) => {
+  const gate = requireLicenseFeature('grok', 'start-session')
   if (!gate.ok) return { success: false, error: gate.error }
 
   sessionAborted = false
-  sessionAccounts = []
+  pruneClosedGrokProfiles()
 
-  let credentials: { email: string; password: string }[]
-  try {
-    credentials = parseCredentialsFile(config.credentialsPath)
-  } catch (err: any) {
-    appLog('error', `Credentials: ${err.message}`, 'main')
-    return { success: false, error: `Không đọc được file credentials: ${err.message}` }
-  }
-
-  const sessionDir = path.join(PROFILES_DIR, `session-${Date.now()}`)
-  fs.mkdirSync(sessionDir, { recursive: true })
-  sessionAccounts = credentials.map((c, i) => ({
-    id:         `acct-${i}`,
-    email:      c.email,
-    password:   c.password,
-    profileDir: path.join(sessionDir, `account-${String(i + 1).padStart(3, '0')}`),
-  }))
-
-  await Promise.allSettled(
-    sessionAccounts.map((acct, i) => loginAccount(acct, i))
-  )
-  if (sessionAborted) return { success: false, error: 'Session bị dừng' }
-
-  const readyAccounts = sessionAccounts.filter(a => a.ctx)
+  const readyAccounts = getGrokReadyWorkers()
   if (readyAccounts.length === 0) {
-    appLog('error', 'No account logged in successfully', 'main')
-    return { success: false, error: 'Không có tài khoản nào đăng nhập thành công' }
+    return { success: false, error: 'Không có profile Grok nào đang mở và đã đăng nhập. Vào Grok tài khoản → mở profile và đăng nhập grok.com/imagine.' }
   }
 
   const flatJobs = buildFlatJobs(config.queue)
   if (flatJobs.length === 0) {
-    for (const acct of sessionAccounts) acct.ctx?.close().catch(() => {})
-    sessionAccounts = []
     return { success: false, error: 'Queue trống' }
   }
 
@@ -756,66 +964,15 @@ ipcMain.handle('start-session', async (_event, config: {
   )
 
   const totalProcessed = successCount + failedCount
-  for (const acct of sessionAccounts) acct.ctx?.close().catch(() => {})
-  sessionAccounts = []
   sharedJobQueue = []
-  // Delete Grok session profile dir when all jobs done (no accumulation)
-  try {
-    if (sessionDir && fs.existsSync(sessionDir)) {
-      fs.rmSync(sessionDir, { recursive: true })
-      appLog('info', `Deleted session dir: ${sessionDir}`, 'main')
-    }
-  } catch (e) { appLog('warn', `Could not delete session dir: ${(e as Error).message}`, 'main') }
   send('session-done', { success: true, summary: { total: totalProcessed, success: successCount, failed: failedCount } })
   return { success: true, summary: { total: totalProcessed, success: successCount, failed: failedCount } }
 })
 
-// ─── Login 1 account ──────────────────────────────────────────────────────────
-
-async function loginAccount(acct: SessionAccount, index: number): Promise<void> {
-  send('account-status', { accountId: acct.id, email: acct.email, status: 'logging_in' })
-
-  // Stagger
-  await new Promise(r => setTimeout(r, index * 1500))
-
-  fs.mkdirSync(acct.profileDir, { recursive: true })
-
-  let ctx: BrowserContext
-  try {
-    ctx = await chromium.launchPersistentContext(acct.profileDir, {
-      channel:  'chrome',
-      headless: false,
-      viewport: { width: 1280, height: 700 },
-      args:     ['--no-sandbox'],
-    })
-  } catch (err: any) {
-    appLog('error', `Launch Chrome failed [${acct.id}]: ${err.message}`, 'main')
-    send('account-status', { accountId: acct.id, email: acct.email, status: 'failed', error: err.message })
-    return
-  }
-
-  const login = new AccountLogin(ctx, acct.id, (_type, payload: any) => {
-    if (_type === 'completed') {
-      send('account-status', { accountId: acct.id, email: acct.email, status: 'ready' })
-    } else if (_type === 'failed') {
-      send('account-status', { accountId: acct.id, email: acct.email, status: 'failed', error: payload.error })
-    }
-  }, { onLog: (level, msg) => appLog(level, `[${acct.id}] ${msg}`, 'login') })
-
-  const result = await login.login({ email: acct.email, password: acct.password })
-
-  if (result.success) {
-    acct.ctx = ctx
-  } else {
-    ctx.close().catch(() => {})
-    send('account-status', { accountId: acct.id, email: acct.email, status: 'failed', error: result.error })
-  }
-}
-
 // ─── Worker loop: 1 account xử lý jobs tuần tự ───────────────────────────────
 
 async function runWorkerLoop(
-  acct: SessionAccount,
+  acct: GrokWorkerAccount,
   jobsMutex: { next: () => any },
   _allJobs: any[],
   cb: { onSuccess: () => void; onFailed: () => void }
@@ -889,21 +1046,41 @@ function buildGrokJob(job: any, outputPath: string): any {
       if (!job.imageDir) {
         throw new Error('Thiếu thư mục ảnh cho mode animate_image')
       }
-      // index trong UI là 0-based, file trên đĩa là 1-based (1.png ứng với job index 0)
-      const imagePath = resolveImageForIndex(job.imageDir, job.index + 1)
-      if (!imagePath) {
-        throw new Error(`Không tìm thấy ảnh cho job #${job.index + 1} trong: ${job.imageDir}`)
+      let imagePathAnimate: string | null = null
+      if (job.imageIndex != null && job.imageIndex >= 0) {
+        const ordered = listImagePathsFromDir(job.imageDir)
+        imagePathAnimate = ordered[job.imageIndex] ?? null
+      } else {
+        // Mặc định: job index 0 → 1.png, …
+        imagePathAnimate = resolveImageForIndex(job.imageDir, job.index + 1)
       }
-      return { ...base, mode: 'image-to-video', resolution: job.resolution, imagePath }
+      if (!imagePathAnimate) {
+        throw new Error(
+          `Không tìm thấy ảnh cho job #${job.index + 1}` +
+            (job.imageIndex != null ? ` (ảnh #${job.imageIndex + 1} trong folder)` : '') +
+            ` trong: ${job.imageDir}`
+        )
+      }
+      return { ...base, mode: 'image-to-video', resolution: job.resolution, duration: job.duration, imagePath: imagePathAnimate }
     case 'edit_image':
       if (!job.imageDir) {
         throw new Error('Thiếu thư mục ảnh cho mode edit_image')
       }
-      const imagePaths = resolveImagesForIndex(job.imageDir, job.index + 1)
-      if (!imagePaths.length) {
-        throw new Error(`Không tìm thấy ảnh cho job #${job.index + 1} trong: ${job.imageDir}`)
+      let imagePathsEdit: string[]
+      if (job.imageIndex != null && job.imageIndex >= 0) {
+        const ordered = listImagePathsFromDir(job.imageDir)
+        const one = ordered[job.imageIndex]
+        if (!one) {
+          throw new Error(`Không tìm thấy ảnh #${job.imageIndex + 1} trong folder: ${job.imageDir}`)
+        }
+        imagePathsEdit = [one]
+      } else {
+        imagePathsEdit = resolveImagesForIndex(job.imageDir, job.index + 1)
+        if (!imagePathsEdit.length) {
+          throw new Error(`Không tìm thấy ảnh cho job #${job.index + 1} trong: ${job.imageDir}`)
+        }
       }
-      return { ...base, mode: 'images-to-image', imagePaths: imagePaths.slice(0, 3) }
+      return { ...base, mode: 'images-to-image', imagePaths: imagePathsEdit.slice(0, 3) }
     default:
       return { ...base, mode: 'prompt-to-image' }
   }
@@ -912,8 +1089,8 @@ function buildGrokJob(job: any, outputPath: string): any {
 // ─── Cleanup ──────────────────────────────────────────────────────────────────
 
 app.on('before-quit', async () => {
-  for (const acct of sessionAccounts) {
-    acct.ctx?.close().catch(() => {})
+  for (const v of grokProfiles) {
+    v.ctx?.close().catch(() => {})
   }
   for (const v of veo3Profiles) {
     v.ctx?.close().catch(() => {})
@@ -1104,7 +1281,7 @@ async function pollVeo3LoginState(profileId: string, profileDir: string, page: P
 }
 
 ipcMain.handle('veo3-open-profiles', async (_event, count: number) => {
-  const gate = requireActivationForAction('veo3-open-profiles')
+  const gate = requireLicenseFeature('veo', 'veo3-open-profiles')
   if (!gate.ok) return { opened: 0, success: false, error: gate.error }
 
   const n = Math.min(Math.max(1, Math.floor(count)), 20)
@@ -1144,7 +1321,7 @@ ipcMain.handle('veo3-open-profiles', async (_event, count: number) => {
 })
 
 ipcMain.handle('veo3-open-selected-profiles', async (_event, profileIds: string[]) => {
-  const gate = requireActivationForAction('veo3-open-selected-profiles')
+  const gate = requireLicenseFeature('veo', 'veo3-open-selected-profiles')
   if (!gate.ok) return { opened: 0, success: false, error: gate.error }
 
   if (!Array.isArray(profileIds) || profileIds.length === 0) return { opened: 0 }
@@ -1202,7 +1379,7 @@ ipcMain.handle('veo3-run-job', async (_event, payload: {
   landscape: boolean
   multiplier: 1 | 2 | 3 | 4
 }) => {
-  const gate = requireActivationForAction('veo3-run-job')
+  const gate = requireLicenseFeature('veo', 'veo3-run-job')
   if (!gate.ok) return { success: false, error: gate.error }
 
   pruneClosedVeo3Profiles()
@@ -1309,7 +1486,7 @@ ipcMain.handle('veo3-run-queue', async (_event,   queue: Array<{
   generationMode?: 'video' | 'image'
   imageModel?: string
 }>) => {
-  const gate = requireActivationForAction('veo3-run-queue')
+  const gate = requireLicenseFeature('veo', 'veo3-run-queue')
   if (!gate.ok) return { success: false, error: gate.error }
 
   pruneClosedVeo3Profiles()

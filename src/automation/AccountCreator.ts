@@ -61,7 +61,10 @@ function randomName(): { firstName: string; lastName: string } {
   return { firstName, lastName }
 }
 
-const PASSWORD = 'Testpassword1@'
+/** Fixed password used at xAI sign-up; same string must be saved in credentials file for re-login. */
+export const GROK_AUTO_SIGNUP_PASSWORD = 'Testpassword1@'
+
+const PASSWORD = GROK_AUTO_SIGNUP_PASSWORD
 
 // ---- AccountCreator ---------------------------------------------------------
 
@@ -69,6 +72,8 @@ export interface AccountCreatorResult {
   profileId: string
   success:   boolean
   email?:    string
+  /** Same as GROK_AUTO_SIGNUP_PASSWORD on success */
+  password?: string
   error?:    string
 }
 
@@ -116,7 +121,7 @@ export class AccountCreator {
       this.emit('completed', { profileId: this.profileId, email: mailbox.email })
       this.log('info', `Profile ready: ${mailbox.email}`)
 
-      return { profileId: this.profileId, success: true, email: mailbox.email }
+      return { profileId: this.profileId, success: true, email: mailbox.email, password: PASSWORD }
 
     } catch (err: any) {
       const error = err.message ?? String(err)

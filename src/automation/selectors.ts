@@ -37,6 +37,19 @@ export const SELECTORS = {
     submitBtn:    'button[aria-label="Submit"][type="submit"]',
   },
 
+  /**
+   * Prompt bar inline (03/2026) — không còn nút Settings; có radiogroup Generation mode,
+   * Aspect Ratio (menu), và khi Video: Video resolution + Video duration.
+   * @see html_inpects/grok_03212026/prompt_bar_*.html
+   */
+  inlinePromptBar: {
+    queryBar:              '.query-bar',
+    generationModeGroup:   '[role="radiogroup"][aria-label="Generation mode"]',
+    aspectRatioBtn:        'button[aria-label="Aspect Ratio"]',
+    videoResolutionGroup:  '[role="radiogroup"][aria-label="Video resolution"]',
+    videoDurationGroup:    '[role="radiogroup"][aria-label="Video duration"]',
+  },
+
   // ─── SETTINGS POPOVER ────────────────────────────────────────────────
   // Render dưới <body> sau khi click settingsBtn
   // Dùng [data-radix-menu-content] để target chính xác (tránh nhầm attachPopover)
@@ -102,9 +115,10 @@ export const SELECTORS = {
   },
 
   // ─── UPLOAD (hidden file input) ──────────────────────────────────────
-  // prompt_bar_after_upload_image.html: input inside form
+  // prompt_bar_after_upload_image.html: input inside form — scope .query-bar để không trúng input khác trên trang
   upload: {
-    fileInput: 'input[type="file"][accept*="image"]',
+    fileInput:        'input[type="file"][accept*="image"]',
+    fileInputQueryBar: '.query-bar input[type="file"][accept*="image"]',
   },
 
   // ─── SETTINGS POPOVER when image uploaded (Flow B/C) ───────────────────

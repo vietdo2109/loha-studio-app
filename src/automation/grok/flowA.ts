@@ -1,10 +1,10 @@
 /**
  * Grok flow A (prompt-to-image / prompt-to-video) and shared helpers.
  */
-import type { Page } from 'patchright'
 import { SELECTORS } from '../selectors'
 import { isVideoOutput } from '../types'
 import type { GrokWorkerContext, GrokJob } from './context'
+import { configureInlinePromptBar, hasInlinePromptBar } from './inlinePromptBar'
 
 const S  = SELECTORS
 const SP = SELECTORS.settingsPopover
@@ -22,6 +22,10 @@ export async function runFlowA(ctx: GrokWorkerContext, job: GrokJob): Promise<vo
 
 export async function flowA_configureSettings(ctx: GrokWorkerContext, job: GrokJob): Promise<void> {
   const { page, log, waitStable } = ctx
+  if (await hasInlinePromptBar(page)) {
+    await configureInlinePromptBar(ctx, job)
+    return
+  }
   try {
     await page.click(S.prompt.settingsBtn)
     await waitStable()
@@ -56,6 +60,12 @@ export async function flowA_submit(ctx: GrokWorkerContext): Promise<void> {
 
 export async function configureAspect(ctx: GrokWorkerContext, job: GrokJob): Promise<void> {
   const { page, log, waitStable } = ctx
+
+  if (await hasInlinePromptBar(page)) {
+    await configureInlinePromptBar(ctx, job)
+    return
+  }
+
   try {
     await page.click(S.prompt.settingsBtn)
     await waitStable()
@@ -88,18 +98,27 @@ export async function configureAspect(ctx: GrokWorkerContext, job: GrokJob): Pro
 
 export async function enterPrompt(ctx: GrokWorkerContext, prompt: string): Promise<void> {
   const { page, log, waitStable } = ctx
-  await page.click(S.prompt.input)
+  const editor = page.locator(S.prompt.input).first()
+  await editor.click()
   await waitStable()
   await page.keyboard.press('Control+A')
   await page.keyboard.press('Delete')
 
-  const lines = prompt.split(/\r?\n/)
-  for (let i = 0; i < lines.length; i++) {
-    if (lines[i].length > 0) {
-      await page.keyboard.type(lines[i], { delay: 20 })
-    }
-    if (i < lines.length - 1) {
-      await page.keyboard.press('Shift+Enter')
+  try {
+    await editor.fill(prompt)
+  } catch {
+    try {
+      await page.keyboard.insertText(prompt)
+    } catch {
+      await page.evaluate(
+        ({ selector, text }) => {
+          const el = document.querySelector(selector) as HTMLElement | null
+          if (!el) return
+          el.focus()
+          document.execCommand('insertText', false, text)
+        },
+        { selector: S.prompt.input, text: prompt }
+      )
     }
   }
   log('info', `Prompt: "${prompt.slice(0, 60)}${prompt.length > 60 ? '...' : ''}"`)

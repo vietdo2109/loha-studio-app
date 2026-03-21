@@ -1,14 +1,9 @@
-import type { QueueProject, QueueJob, Mode } from '../types'
+import type { QueueProject, QueueJob } from '../types'
 import { Modal, ModalRow, ModalLabel, Btn, Tag } from './ui'
 
 export function JobDetailModal({ qp, job, onClose }: {
   qp: QueueProject; job: QueueJob; onClose: () => void
 }) {
-  const modeLabel: Record<Mode, string> = {
-    prompt_only: "Prompt only",
-    edit_image: "Edit image",
-    animate_image: "Animate image",
-  }
   const hasImage = qp.mode !== "prompt_only"
   const imageHint = hasImage && qp.imageDir
     ? qp.mode === "animate_image"
@@ -22,8 +17,12 @@ export function JobDetailModal({ qp, job, onClose }: {
         <ModalLabel>Dự án</ModalLabel>
         <div style={{ fontSize: 12, color: "var(--text)" }}>{qp.name}</div>
         <div style={{ marginTop: 6, display: "flex", flexWrap: "wrap", gap: 6 }}>
-          <Tag>{modeLabel[qp.mode]}</Tag>
           <Tag>{qp.mediaType}</Tag>
+          {qp.mode === "prompt_only" ? (
+            <Tag>Chỉ prompt</Tag>
+          ) : (
+            <Tag>{qp.mode === "animate_image" ? "Ảnh → video" : "Chỉnh ảnh"}</Tag>
+          )}
           <Tag>{qp.ratio}</Tag>
           {qp.mediaType === "Video" && <Tag>{qp.resolution} · {qp.duration}</Tag>}
         </div>

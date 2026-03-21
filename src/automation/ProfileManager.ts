@@ -270,6 +270,14 @@ private async retryProfile(record: ProfileRecord, retryIndex: number): Promise<v
     }
   }
 
+  /**
+   * Ngắt quyền sở hữu profile map (không đóng browser).
+   * Gọi sau khi đã chuyển `ctx` sang session app — tránh double-close khi ProfileManager bị GC.
+   */
+  releaseOwnership(): void {
+    this.profiles.clear()
+  }
+
   // ─── Helpers ──────────────────────────────────────────────────────────────
   private log(level: 'info' | 'warn' | 'error', message: string) {
     const ts = new Date().toLocaleTimeString()
