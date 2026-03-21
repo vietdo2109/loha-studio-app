@@ -82,6 +82,20 @@ Success:
 
 Admin-only. Body: `{ "id": "<license uuid>", "veoActive"?: boolean, "grokActive"?: boolean, "soraActive"?: boolean }` — only include fields you want to change.
 
+### `POST /api/admin/keys/merge-features-by-phone`
+
+Admin-only. Bật **thêm** model cho license gắn SĐT (không tắt model đang mở). Chọn bản ghi mới nhất, ưu tiên chưa `revoked`.
+
+Body:
+```json
+{
+  "phoneTag": "0912345678",
+  "enable": ["veo", "sora"]
+}
+```
+
+`enable` có thể là mảng hoặc chuỗi `"veo, sora"`.
+
 ## 4) Deploy on Vercel
 
 1. Import `license-server` as a Vercel project.

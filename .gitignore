@@ -18,6 +18,8 @@ _publish_loha_admin/
 **/.env.*
 !**/.env.example
 
+*.tsbuildinfo
+
 *.log
 *-actions.log
 fail.txt
