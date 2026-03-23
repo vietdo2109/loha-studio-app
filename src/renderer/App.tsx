@@ -875,12 +875,12 @@ export default function App() {
           </div>
         </div>
 
-        <div style={{ flex: 1, minHeight: 0, display: "flex", overflow: "hidden" }}>
+        <div style={{ flex: "1 1 0%", minHeight: 0, minWidth: 0, display: "flex", overflow: "hidden" }}>
 
           {activePanel === "projects" && (
             <>
               <div style={{
-                width: "50%", display: "flex", flexDirection: "column", minHeight: 0,
+                width: "50%", maxWidth: "50%", flex: "1 1 0%", display: "flex", flexDirection: "column", minHeight: 0, minWidth: 0,
                 borderRight: "1px solid var(--border)",
               }}>
                 <div style={{
@@ -941,7 +941,7 @@ export default function App() {
                   </div>
                 </div>
 
-                <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: 10, display: "flex", flexDirection: "column", gap: 4 }}>
+                <div className="app-scroll-region" style={{ flex: "1 1 0%", minHeight: 0, minWidth: 0, overflowY: "auto", overflowX: "hidden", padding: 10, display: "flex", flexDirection: "column", gap: 4, overscrollBehavior: "contain" }}>
                   {platform === "Veo3" ? (
                     <>
                       {veo3Projects.length === 0 ? (
@@ -1014,7 +1014,7 @@ export default function App() {
                 </button>
               </div>
 
-              <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", minHeight: 0, overflow: "hidden" }}>
+              <div style={{ flex: "1 1 0%", minWidth: 0, minHeight: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
                 <div style={{
                   display: "flex", alignItems: "center", justifyContent: "space-between",
                   padding: "10px 14px", borderBottom: "1px solid var(--border)",
@@ -1028,7 +1028,22 @@ export default function App() {
                   )}
                 </div>
 
-                <div style={{ flex: 1, minHeight: 0, minWidth: 0, overflowY: "auto", overflowX: "hidden", padding: 10, display: "flex", flexDirection: "column", gap: 6 }}>
+                <div
+                  className="app-scroll-region"
+                  style={{
+                    flex: "1 1 0%",
+                    minHeight: 0,
+                    minWidth: 0,
+                    overflowY: "auto",
+                    overflowX: "hidden",
+                    padding: 10,
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 6,
+                    overscrollBehavior: "contain",
+                    WebkitOverflowScrolling: "touch",
+                  }}
+                >
                   {platform === "Veo3" ? (
                     veo3Queue.length === 0 ? (
                       <div style={{

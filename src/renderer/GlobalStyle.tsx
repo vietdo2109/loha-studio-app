@@ -44,9 +44,11 @@ export const GlobalStyle = () => (
       -webkit-font-smoothing: antialiased;
     }
 
-    ::-webkit-scrollbar { width: 5px; height: 5px; }
+    ::-webkit-scrollbar { width: 8px; height: 8px; }
     ::-webkit-scrollbar-track { background: transparent; }
     ::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 99px; }
+    /* Scrollable panels: slightly wider thumb on Windows/Electron */
+    .app-scroll-region::-webkit-scrollbar { width: 10px; }
 
     input, textarea, select {
       font-family: var(--font);

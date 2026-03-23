@@ -136,6 +136,49 @@ async function withFocusLock<T>(fn: () => Promise<T>): Promise<T> {
   }
 }
 
+/**
+ * Khi nhiều profile / user + automation cùng máy: có thể vô tình mở modal "Bạn có muốn xóa"
+ * hoặc bôi xanh text — chặn mọi click (submit, import). Đóng an toàn bằng Hủy (không Xoá).
+ */
+export async function dismissAccidentalBlockingUI(page: Page): Promise<void> {
+  try {
+    await page.evaluate(() => {
+      try {
+        window.getSelection()?.removeAllRanges()
+      } catch {
+        /* ignore */
+      }
+    })
+  } catch {
+    /* ignore */
+  }
+
+  try {
+    const deleteConfirm = page
+      .locator('[role="dialog"], [role="alertdialog"]')
+      .filter({ has: page.locator('button').filter({ hasText: /Hủy|Cancel/i }) })
+      .filter({ has: page.locator('button').filter({ hasText: /Xoá|Xóa|Delete/i }) })
+      .first()
+
+    const visible = await deleteConfirm.isVisible().catch(() => false)
+    if (!visible) return
+
+    stepLog('Phát hiện modal xác nhận xóa — bấm Hủy (tránh treo submit/import)')
+    await deleteConfirm.locator('button').filter({ hasText: /Hủy|Cancel/i }).first().click({ timeout: 6000 })
+    await waitStable(page, 400)
+  } catch (e) {
+    try {
+      await page.keyboard.press('Escape')
+      await waitStable(page, 200)
+      await page.keyboard.press('Escape')
+      await waitStable(page, 200)
+      stepLog(`Đóng modal fallback Escape: ${(e as Error).message}`)
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
 async function bringProjectPageToFront(page: Page, opts: { bypassLock?: boolean } = {}): Promise<void> {
   try {
     if (!opts.bypassLock) await focusLock
@@ -144,6 +187,7 @@ async function bringProjectPageToFront(page: Page, opts: { bypassLock?: boolean 
       await p.bringToFront()
       await waitStable(page, 120)
     }
+    await dismissAccidentalBlockingUI(page)
   } catch {
     // Ignore focus errors; caller will still operate on this Page object.
   }

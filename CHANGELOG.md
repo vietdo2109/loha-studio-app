@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.1] - 2026-03-10
+
+### Fixed (Veo3 / app shell)
+
+- **Hàng đợi (Queue)**: Sửa layout flex để danh sách job **cuộn đúng** khi có nhiều tác vụ; thanh cuộn dễ nhìn hơn trên Windows.
+- **Flow (Chrome)**: Trước mỗi bước tự động, tool **xóa vùng chọn văn bản** và **đóng an toàn** hộp thoại xác nhận xóa nếu vô tình mở (nhiều profile / thao tác chồng) — giảm tình trạng treo hoặc thao tác sai do modal hoặc “bôi xanh” trên trang.
+
 ## [1.2.0] - 2026-03-10
 
 ### Added (Grok Imagine)
