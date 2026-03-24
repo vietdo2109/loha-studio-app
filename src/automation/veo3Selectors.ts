@@ -36,7 +36,8 @@ export const VEO3_SELECTORS = {
 
   // ─── Content upload buttons in composer (Frames slots + Ingredients button) ─
   openContentDialogBtn: '#__next div[type="button"][aria-haspopup="dialog"]:has-text("Bắt đầu"), #__next div[type="button"][aria-haspopup="dialog"]:has-text("Kết thúc"), #__next button[type="button"][aria-haspopup="dialog"]',
-  // Content upload dialog (content_upload_menu.html) — upload button opens file picker
+  // Content upload dialog (content_upload_menu.html) — sort dropdown + "Tìm kiếm các thành phần"; upload_image_sort.html
+  // "Đã dùng gần đây" can hide items from ~17th upload — automation must ensure "Mới nhất" before import (see ensureContentUploadDialogSortNewest).
   contentDialogUploadBtn: 'button:has(span:text-is("Tải hình ảnh lên")), button[class*="ewQKQI"]:has(i[font-size="1.25rem"])',
   // Hidden file input — may be inside dialog or body after dialog opens
   contentDialogFileInput: 'input[type="file"][accept*="image"]',

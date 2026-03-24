@@ -5,6 +5,7 @@
 
 import * as fs from 'fs'
 import * as path from 'path'
+import { logAsciiVi } from '../automation/logAsciiVi'
 
 const LEVELS = ['info', 'warn', 'error'] as const
 export type LogLevel = typeof LEVELS[number]
@@ -46,7 +47,7 @@ export function getLogDirectory(): string {
 }
 
 export function appLog(level: LogLevel, message: string, source?: string): void {
-  const line = formatLine(level, message, source)
+  const line = formatLine(level, logAsciiVi(message), source)
   const fp = getLogFilePath()
   if (fp) {
     try {

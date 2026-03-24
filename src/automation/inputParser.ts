@@ -97,10 +97,26 @@ export function resolveAllImagePathsFromDir(imageDir: string, maxCount: number =
 export function listImagePathsFromDir(imageDir: string): string[] {
   if (!imageDir || !fs.existsSync(imageDir)) return []
   const entries = fs.readdirSync(imageDir, { withFileTypes: true })
+  const isPureNumericStem = (fileName: string): number | null => {
+    const stem = path.parse(fileName).name.trim()
+    if (!/^\d+$/.test(stem)) return null
+    const n = Number(stem)
+    return Number.isFinite(n) ? n : null
+  }
   return entries
     .filter(e => e.isFile())
     .map(e => e.name)
     .filter(name => IMAGE_EXTENSIONS.includes(path.extname(name).toLowerCase()))
+    // Deterministic order for prompt/image flows:
+    // numeric filenames are ordered 1 -> 2 -> ... -> N, then non-numeric names.
+    .sort((a, b) => {
+      const aNum = isPureNumericStem(a)
+      const bNum = isPureNumericStem(b)
+      if (aNum != null && bNum != null) return aNum - bNum
+      if (aNum != null) return -1
+      if (bNum != null) return 1
+      return a.localeCompare(b, undefined, { sensitivity: 'base', numeric: true })
+    })
     .map(name => path.join(imageDir, name))
 }
 

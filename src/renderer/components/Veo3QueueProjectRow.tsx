@@ -29,7 +29,7 @@ export function Veo3QueueProjectRow({ qp, onToggle, onJobClick }: {
   const statusDot   = { done: "#22c55e", running: "#3b82f6", pending: "#d1d5db", failed: "#ef4444" }
 
   return (
-    <div style={{ border: "1px solid var(--border)", borderRadius: "var(--radius)", overflow: "hidden", animation: "slideIn .15s ease" }}>
+    <div style={{ border: "1px solid var(--border)", borderRadius: "var(--radius)", animation: "slideIn .15s ease" }}>
       <div style={{
         display: "flex", alignItems: "center", gap: 10, padding: "10px 12px",
         background: "var(--surface)", cursor: "pointer",
@@ -74,7 +74,12 @@ export function Veo3QueueProjectRow({ qp, onToggle, onJobClick }: {
                   {job.status === "pending" ? (
                     <span style={{ fontSize: 11, color: "var(--text3)" }}>Chờ xử lý</span>
                   ) : job.status === "failed" ? (
-                    <span style={{ fontSize: 11, color: "var(--danger)" }}>{job.error ?? "Thất bại"}</span>
+                    <span
+                      style={{ fontSize: 11, color: "var(--danger)" }}
+                      title={job.errorDetail ? `${job.error ?? ""}\n\nChi tiết: ${job.errorDetail}` : (job.error ?? "")}
+                    >
+                      {job.error ?? "Thất bại"}
+                    </span>
                   ) : (
                     <ProgressBar value={job.progress} color={jcolor[job.status]}/>
                   )}

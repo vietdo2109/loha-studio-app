@@ -3,7 +3,7 @@
  * Uses veo3Selectors; call from a Flow page (after login).
  */
 
-import { Page, Request, Response } from 'patchright'
+import { Page, Request, Response, Locator } from 'patchright'
 import * as path from 'path'
 import * as fs from 'fs'
 import { VEO3_SELECTORS as S, VEO3_FLOW_BASE, VEO3_PROJECT_URL_PATTERN, VEO3_EDIT_PAGE_URL_PATTERN } from './veo3Selectors'
@@ -13,6 +13,10 @@ import {
   parsedListToVerboseLayoutString,
   type ParsedGeneratedList,
 } from './veo3GeneratedListParser'
+import { flowEmit, withFlowAction } from './flowActionLog'
+import { logAsciiVi } from './logAsciiVi'
+import { installFlowUserInterferenceMonitor } from './userInterferenceMonitor'
+import { emitBlockingUiDismissed } from './blockingUiNotify'
 
 const DOM_STABLE_MS = 800
 
@@ -69,7 +73,18 @@ function resetVeo3TraceLogs(): void {
 }
 
 function stepLog(message: string): void {
-  console.log(`[Veo3 flow] ${message}`)
+  const line = logAsciiVi(message)
+  console.log(`[Veo3 flow] ${line}`)
+  const lower = message.toLowerCase()
+  if (message.includes('[TRACE') || message.includes('[TRACE image-import]')) {
+    flowEmit('detail', line)
+  } else if (lower.includes('[hard stop]') || (lower.includes('error') && !lower.includes('no error'))) {
+    flowEmit('error', line)
+  } else if (lower.includes('[warn]') || /\bwarn\b/.test(lower)) {
+    flowEmit('warn', line)
+  } else {
+    flowEmit('info', line)
+  }
   if (!VEO3_ACTION_LOG) return
   try {
     if (!veo3ActionLogPath) {
@@ -79,15 +94,15 @@ function stepLog(message: string): void {
       veo3ActionLogPath = path.join(dir, `${ts}-actions.log`)
       fs.appendFileSync(veo3ActionLogPath, `# Veo3 action log started at ${new Date().toISOString()}\n`, 'utf-8')
     }
-    const lower = message.toLowerCase()
-    const level = (lower.includes('error') || lower.includes('failed'))
+    const lower2 = message.toLowerCase()
+    const level = (lower2.includes('error') || lower2.includes('failed'))
       ? 'ERROR'
-      : (lower.includes('skip') || lower.includes('retry') || lower.includes('timeout'))
+      : (lower2.includes('skip') || lower2.includes('retry') || lower2.includes('timeout'))
         ? 'WARN'
         : 'INFO'
     fs.appendFileSync(
       veo3ActionLogPath,
-      `${new Date().toISOString()} [${level}] ${message}\n`,
+      `${new Date().toISOString()} [${level}] ${line}\n`,
       'utf-8'
     )
   } catch {
@@ -136,11 +151,22 @@ async function withFocusLock<T>(fn: () => Promise<T>): Promise<T> {
   }
 }
 
+export type DismissBlockingOpts = {
+  /** Hiển thị trong log + thông báo app */
+  stepLabel?: string
+  /** Không gửi toast (dùng khi gọi định kỳ để tránh spam) */
+  skipNotify?: boolean
+}
+
 /**
- * Khi nhiều profile / user + automation cùng máy: có thể vô tình mở modal "Bạn có muốn xóa"
- * hoặc bôi xanh text — chặn mọi click (submit, import). Đóng an toàn bằng Hủy (không Xoá).
+ * Chỉ đóng modal xác nhận xóa của Flow: nội dung kiểu "Bạn có muốn xóa" + nút Hủy + nút Xóa.
+ * Không gửi Escape, không khớp dialog chung — tránh đóng nhầm hộp thoại chọn ảnh / menu khác.
+ * Trả về true nếu đã bấm Hủy (có thể thông báo user).
  */
-export async function dismissAccidentalBlockingUI(page: Page): Promise<void> {
+export async function dismissAccidentalBlockingUI(page: Page, opts?: DismissBlockingOpts): Promise<boolean> {
+  let dismissedDialog = false
+  const label = opts?.stepLabel ?? 'Google Flow'
+
   try {
     await page.evaluate(() => {
       try {
@@ -156,30 +182,36 @@ export async function dismissAccidentalBlockingUI(page: Page): Promise<void> {
   try {
     const deleteConfirm = page
       .locator('[role="dialog"], [role="alertdialog"]')
-      .filter({ has: page.locator('button').filter({ hasText: /Hủy|Cancel/i }) })
-      .filter({ has: page.locator('button').filter({ hasText: /Xoá|Xóa|Delete/i }) })
+      .filter({
+        hasText: /Bạn có muốn xóa|Do you want to delete/i,
+      })
+      .filter({ has: page.locator('button').filter({ hasText: /^(Hủy|Cancel)$/i }) })
+      .filter({ has: page.locator('button').filter({ hasText: /^(Xoá|Xóa|Delete)$/i }) })
       .first()
 
     const visible = await deleteConfirm.isVisible().catch(() => false)
-    if (!visible) return
-
-    stepLog('Phát hiện modal xác nhận xóa — bấm Hủy (tránh treo submit/import)')
-    await deleteConfirm.locator('button').filter({ hasText: /Hủy|Cancel/i }).first().click({ timeout: 6000 })
-    await waitStable(page, 400)
-  } catch (e) {
-    try {
-      await page.keyboard.press('Escape')
-      await waitStable(page, 200)
-      await page.keyboard.press('Escape')
-      await waitStable(page, 200)
-      stepLog(`Đóng modal fallback Escape: ${(e as Error).message}`)
-    } catch {
-      /* ignore */
+    if (visible) {
+      stepLog('Phát hiện modal xác nhận xóa (Bạn có muốn xóa) — bấm Hủy')
+      await deleteConfirm.locator('button').filter({ hasText: /^(Hủy|Cancel)$/i }).first().click({ timeout: 6000 })
+      await waitStable(page, 400)
+      dismissedDialog = true
+      if (!opts?.skipNotify) {
+        emitBlockingUiDismissed(label, 'Đã đóng modal xác nhận xóa (Hủy). Automation tiếp tục.')
+      }
+      return true
     }
+  } catch (e) {
+    stepLog(`Đóng modal xóa: ${(e as Error).message}`)
   }
+
+  return dismissedDialog
 }
 
-async function bringProjectPageToFront(page: Page, opts: { bypassLock?: boolean } = {}): Promise<void> {
+/** `skipDismiss`: chỉ bringToFront, không Escape — bắt buộc cho tab edit (Escape đóng menu Tải xuống / phá click độ phân giải). */
+async function bringProjectPageToFront(
+  page: Page,
+  opts: { bypassLock?: boolean; skipDismiss?: boolean } = {}
+): Promise<void> {
   try {
     if (!opts.bypassLock) await focusLock
     const p = page as unknown as { bringToFront?: () => Promise<void> }
@@ -187,7 +219,9 @@ async function bringProjectPageToFront(page: Page, opts: { bypassLock?: boolean 
       await p.bringToFront()
       await waitStable(page, 120)
     }
-    await dismissAccidentalBlockingUI(page)
+    const mayDismiss =
+      !opts.skipDismiss && !isImageImportBusy(page) && !isPromptInputBusy(page)
+    if (mayDismiss) await dismissAccidentalBlockingUI(page)
   } catch {
     // Ignore focus errors; caller will still operate on this Page object.
   }
@@ -265,14 +299,19 @@ async function withImageImportBusy<T>(page: Page, fn: () => Promise<T>): Promise
 
 /** 1. Click "Dự án mới" (new project) and wait for navigation to project URL */
 export async function flowClickNewProject(page: Page): Promise<void> {
-  stepLog('Step 1: Click new project button…')
-  const btn = page.locator(S.newProjectBtn).first()
-  await btn.waitFor({ state: 'visible', timeout: 15000 })
-  await Promise.all([
-    page.waitForURL(VEO3_PROJECT_URL_PATTERN, { timeout: 20000 }),
-    btn.click(),
-  ])
-  await waitStable(page, 1500)
+  await withFlowAction(
+    'Bấm "Dự án mới" và chờ vào trang dự án Flow',
+    'Nút tạo project → chuyển URL dự án (tối đa ~20 giây)',
+    async () => {
+      const btn = page.locator(S.newProjectBtn).first()
+      await btn.waitFor({ state: 'visible', timeout: 15000 })
+      await Promise.all([
+        page.waitForURL(VEO3_PROJECT_URL_PATTERN, { timeout: 20000 }),
+        btn.click(),
+      ])
+      await waitStable(page, 1500)
+    }
+  )
   stepLog('Step 1: Done — on project page')
 }
 
@@ -588,6 +627,62 @@ export async function flowSetImageMode(
   stepLog('Image mode settings done')
 }
 
+/** True if content-dialog sort trigger already shows "Mới nhất" / Newest / Latest (upload_image_sort.html). */
+function isContentDialogSortNewestLabel(text: string): boolean {
+  const t = text.replace(/\s+/g, ' ').trim()
+  if (/Mới nhất/.test(t)) return true
+  if (/\bNewest\b/i.test(t) || /\bLatest\b/i.test(t)) return true
+  return false
+}
+
+/**
+ * Content upload dialog (content_upload_menu.html): sort "Đã dùng gần đây" can omit items from ~17th upload onward.
+ * If the sort dropdown is not "Mới nhất", open it and choose "Mới nhất" before scrolling/importing.
+ */
+async function ensureContentUploadDialogSortNewest(page: Page, dialog: Locator): Promise<void> {
+  try {
+    let sortTrigger = dialog.locator('button[aria-haspopup="menu"]').filter({
+      hasText:
+        /Đã dùng gần đây|Dùng nhiều nhất|Mới nhất|Cũ nhất|Yêu thích|Recently used|Most used|Newest|Latest|Oldest|Favorites/i,
+    }).first()
+    if ((await sortTrigger.count().catch(() => 0)) === 0) {
+      const n = await dialog.locator('button[aria-haspopup="menu"]').count().catch(() => 0)
+      if (n >= 2) sortTrigger = dialog.locator('button[aria-haspopup="menu"]').nth(1)
+      else return
+    }
+    const label = (await sortTrigger.innerText().catch(() => '')).replace(/\s+/g, ' ').trim()
+    if (!label || isContentDialogSortNewestLabel(label)) {
+      stepLog('Hộp thoại upload: sắp xếp đã là Mới nhất — bỏ qua')
+      return
+    }
+    stepLog(
+      `Hộp thoại upload: sắp xếp "${label.slice(0, 48)}" — chuyển sang Mới nhất (tránh list thiếu ảnh từ ~thứ 17)`
+    )
+    await sortTrigger.click({ timeout: 6000 })
+    await page.locator('[role="menu"]').waitFor({ state: 'visible', timeout: 6000 })
+    const byExact = [
+      () => page.getByRole('menuitem', { name: 'Mới nhất', exact: true }),
+      () => page.getByRole('menuitem', { name: 'Newest', exact: true }),
+      () => page.getByRole('menuitem', { name: 'Latest', exact: true }),
+    ]
+    let clicked = false
+    for (const getLoc of byExact) {
+      const mi = getLoc()
+      if ((await mi.count().catch(() => 0)) > 0) {
+        await mi.first().click({ timeout: 6000 })
+        clicked = true
+        break
+      }
+    }
+    if (!clicked) {
+      await page.getByRole('menuitem', { name: /Mới nhất|Newest|Latest/i }).first().click({ timeout: 6000 })
+    }
+    await waitStable(page, 450)
+  } catch (e) {
+    stepLog(`[WARN] ensureContentUploadDialogSortNewest: ${(e as Error).message}`)
+  }
+}
+
 /** 3. Open content dialog, set files on file input, capture upload request/response details, wait for all tiles, then close dialog. Returns ordered media names and full upload log. */
 export interface UploadLogEntry {
   request: { url: string; method: string; postData: string; fileName: string | null; slot: number; when: number }
@@ -685,6 +780,10 @@ export async function flowUploadImages(page: Page, imagePaths: string[], mode: V
   await openBtn.waitFor({ state: 'visible', timeout: 10000 })
   await openBtn.click()
   await waitStable(page, 1200)
+
+  const contentDialog = page.locator('[role="dialog"]').first()
+  await contentDialog.waitFor({ state: 'visible', timeout: 10000 })
+  await ensureContentUploadDialogSortNewest(page, contentDialog)
 
   const fileInput = page.locator(S.contentDialogFileInput).first()
   const uploadBtn = page.locator('button:has(span:text-is("Tải hình ảnh lên"))').first()
@@ -889,6 +988,50 @@ export async function flowAddImageToPrompt(page: Page, tileIndex: number): Promi
 /** 4b. Add image to prompt by clicking frame slot button (Bắt đầu/Kết thúc), opening content menu, then selecting media by name. Falls back to right-click add when needed. */
 export async function flowAddImageToPromptByMediaName(page: Page, mediaName: string, slotIndex: number): Promise<void> {
   await withImageImportBusy(page, async () => {
+  const resolveFrameSlotButton = async (): Promise<Locator> => {
+    // Preferred selectors by label first (VN/EN), then structural fallback in prompt bar.
+    const preferred =
+      slotIndex === 0
+        ? page.locator(
+            [
+              '#__next div[type="button"][aria-haspopup="dialog"]:has-text("Bắt đầu")',
+              '#__next button[type="button"][aria-haspopup="dialog"]:has-text("Bắt đầu")',
+              '#__next div[type="button"][aria-haspopup="dialog"]:has-text("Start")',
+              '#__next button[type="button"][aria-haspopup="dialog"]:has-text("Start")',
+            ].join(', ')
+          ).first()
+        : page.locator(
+            [
+              '#__next div[type="button"][aria-haspopup="dialog"]:has-text("Kết thúc")',
+              '#__next button[type="button"][aria-haspopup="dialog"]:has-text("Kết thúc")',
+              '#__next div[type="button"][aria-haspopup="dialog"]:has-text("End")',
+              '#__next button[type="button"][aria-haspopup="dialog"]:has-text("End")',
+            ].join(', ')
+          ).first()
+
+    if (await preferred.isVisible().catch(() => false)) return preferred
+
+    // Fallback: any visible slot opener in prompt bar.
+    // Slot can be empty ([aria-haspopup="dialog"]) or already occupied ([data-card-open]).
+    const promptBarSlots = page
+      .locator(
+        [
+          `${S.promptBar} [aria-haspopup="dialog"]`,
+          `${S.promptBar} [data-card-open]`,
+        ].join(', ')
+      )
+      .filter({
+        has: page.locator('img, span, div, i'),
+      })
+    const count = await promptBarSlots.count().catch(() => 0)
+    if (count === 0) {
+      throw new Error(`No frame slot button found in prompt bar (slot=${slotIndex})`)
+    }
+    // If only one slot button is visible in current layout, use it for both slot requests.
+    const targetIndex = Math.min(slotIndex, count - 1)
+    return promptBarSlots.nth(targetIndex)
+  }
+
   const fallbackRightClickAdd = async (): Promise<void> => {
     const tile = page.locator(S.uploadedTile).filter({ has: page.locator(`img[src*="name=${mediaName}"]`) }).first()
     await tile.waitFor({ state: 'visible', timeout: 12000 })
@@ -966,27 +1109,62 @@ export async function flowAddImageToPromptByMediaName(page: Page, mediaName: str
     await waitStable(page, 600)
   }
 
+  const clearSlotIfOccupied = async (slotBtn: Locator): Promise<void> => {
+    const occupied = await slotBtn
+      .locator('img[src*="getMediaUrlRedirect"][src*="name="]')
+      .first()
+      .isVisible()
+      .catch(() => false)
+    if (!occupied) return
+
+    stepLog(`Step 4: Slot ${slotIndex + 1} already has image — clear before re-import`)
+    const clearedByJs = await slotBtn.evaluate((node: Element) => {
+      const hasImg = !!node.querySelector('img[src*="getMediaUrlRedirect"][src*="name="]')
+      if (!hasImg) return { occupied: false, cleared: false }
+      const icon = Array.from(node.querySelectorAll('i')).find((el) => /cancel/i.test((el.textContent || '').trim()))
+      if (!icon) return { occupied: true, cleared: false }
+      const target = (icon.closest('button') || icon.closest('div') || icon) as HTMLElement
+      ;['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'].forEach(type => {
+        target.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }))
+      })
+      return { occupied: true, cleared: true }
+    }).catch(() => ({ occupied: true, cleared: false }))
+
+    if (!clearedByJs.cleared) {
+      // Fallback click on common cancel affordances if JS dispatch path missed.
+      const cancelBtn = slotBtn
+        .locator(
+          [
+            'button:has(i:text-is("cancel"))',
+            'i:text-is("cancel")',
+            '[aria-label*="clear" i]',
+            '[aria-label*="remove" i]',
+            '[aria-label*="xóa" i]',
+            '[aria-label*="hủy" i]',
+          ].join(', ')
+        )
+        .first()
+      if (await cancelBtn.isVisible().catch(() => false)) {
+        await cancelBtn.click({ timeout: 3000 }).catch(() => null)
+      }
+    }
+    await waitStable(page, 350)
+  }
+
   stepLog(`Step 4: Add image ${slotIndex + 1} to prompt (image key=${mediaName.slice(0, 24)}…, frame-slot picker)…`)
   await page.keyboard.press('Escape')
   await waitStable(page, 350)
 
   // Frames mode: select slot by clicking "Bắt đầu"/"Kết thúc", then choose media in dialog list.
   // If slot button is unavailable (e.g. ingredients mode), use legacy fallback.
-  const slotBtn = slotIndex === 0
-    ? page.locator(S.framesStartSlot).first()
-    : slotIndex === 1
-      ? page.locator(S.framesEndSlot).first()
-      : null
-
-  if (slotBtn == null) {
-    throw new Error(`JS-only import requires frame slot button for slot=${slotIndex}`)
-  }
+  const slotBtn = await resolveFrameSlotButton()
   try {
     let lastErr: string | null = null
     for (let openAttempt = 1; openAttempt <= 1; openAttempt++) {
       await bringProjectPageToFront(page)
       await slotBtn.waitFor({ state: 'visible', timeout: 10000 })
       traceImportLog(`slot=${slotIndex} media=${mediaName} button visible (openAttempt=${openAttempt})`)
+      await clearSlotIfOccupied(slotBtn)
       try {
         await slotBtn.click({ timeout: 6000 })
       } catch {
@@ -998,6 +1176,7 @@ export async function flowAddImageToPromptByMediaName(page: Page, mediaName: str
       const dialog = page.locator('[role="dialog"]').first()
       await dialog.waitFor({ state: 'visible', timeout: 8000 })
       traceImportLog(`slot=${slotIndex} dialog opened (openAttempt=${openAttempt})`)
+      await ensureContentUploadDialogSortNewest(page, dialog)
 
       // JS-only pick path: exact/contains filename text and force dispatch click events.
       const jsPicked = await page.evaluate(({ wanted }) => {
@@ -1126,43 +1305,85 @@ export async function flowAddImagesToPromptFromOrderedNames(
 
 /** 5. Paste prompt into the textbox and submit (clipboard + Ctrl+V for speed; fallback insertText). */
 export async function flowTypePromptAndSubmit(page: Page, prompt: string): Promise<void> {
+  const detectImmediateGeneration403 = async (): Promise<void> => {
+    const res = await page
+      .waitForResponse(
+        (r) => {
+          const url = r.url()
+          if (!/googleapis\.com\/v1\/video:/i.test(url)) return false
+          if (r.request().method() !== 'POST') return false
+          return /video:/i.test(url)
+        },
+        { timeout: 6000 }
+      )
+      .catch(() => null)
+    if (!res) return
+    if (res.status() !== 403) return
+    let bodySnippet = ''
+    try {
+      bodySnippet = (await res.text()).slice(0, 600)
+    } catch {
+      /* ignore body parse failures */
+    }
+    throw new Error(`VEO3_PROFILE_BLOCKED_403: submit request rejected (${res.url()}) ${bodySnippet}`)
+  }
+
   await withPromptInputBusy(page, async () => {
     await bringProjectPageToFront(page)
     stepLog('Step 5: Paste prompt and submit…')
     const input = page.locator(S.promptInput).first()
-    await input.waitFor({ state: 'visible', timeout: 10000 })
-    await input.click()
-    await waitStable(page, 300)
-    await page.keyboard.press('Control+A')
-    await page.keyboard.press('Delete')
-    if (prompt.length > 0) {
-      let pasted = false
-      try {
-        await page.evaluate((text: string) => navigator.clipboard.writeText(text), prompt)
-        await page.keyboard.press('Control+V')
-        pasted = true
-      } catch {
-        // clipboard not available (e.g. not focused or secure context)
+    await withFlowAction(
+      'Focus ô nhập prompt và xóa nội dung cũ',
+      'Click ô prompt → Ctrl+A → Delete',
+      async () => {
+        await input.waitFor({ state: 'visible', timeout: 10000 })
+        await input.click()
+        await waitStable(page, 300)
+        await page.keyboard.press('Control+A')
+        await page.keyboard.press('Delete')
       }
-      if (!pasted) {
-        const { clipboard } = require('electron')
-        try {
-          clipboard.writeText(prompt)
-          await page.keyboard.press('Control+V')
-          pasted = true
-        } catch {
-          // not in Electron or clipboard failed
+    )
+    await withFlowAction(
+      'Điền prompt (clipboard Ctrl+V hoặc gõ từng phần)',
+      prompt.length > 200 ? `Nội dung (${prompt.length} ký tự): ${prompt.slice(0, 120)}…` : `Nội dung: ${prompt}`,
+      async () => {
+        if (prompt.length > 0) {
+          let pasted = false
+          try {
+            await page.evaluate((text: string) => navigator.clipboard.writeText(text), prompt)
+            await page.keyboard.press('Control+V')
+            pasted = true
+          } catch {
+            /* clipboard not available */
+          }
+          if (!pasted) {
+            try {
+              const { clipboard } = require('electron')
+              clipboard.writeText(prompt)
+              await page.keyboard.press('Control+V')
+              pasted = true
+            } catch {
+              /* not in Electron */
+            }
+          }
+          if (!pasted) {
+            await page.keyboard.insertText(prompt)
+          }
         }
+        await waitStable(page, 300)
       }
-      if (!pasted) {
-        await page.keyboard.insertText(prompt)
+    )
+    await withFlowAction(
+      'Bấm nút gửi / tạo (submit)',
+      'Nút tạo video hoặc tạo trên Flow',
+      async () => {
+        const submit = page.locator(S.submitBtn).first()
+        await submit.waitFor({ state: 'visible', timeout: 5000 })
+        await submit.click()
+        await detectImmediateGeneration403()
+        await waitStable(page)
       }
-    }
-    await waitStable(page, 300)
-    const submit = page.locator(S.submitBtn).first()
-    await submit.waitFor({ state: 'visible', timeout: 5000 })
-    await submit.click()
-    await waitStable(page)
+    )
     stepLog('Step 5: Done — submitted')
   })
 }
@@ -1179,6 +1400,8 @@ export async function flowTypePromptAndSubmit(page: Page, prompt: string): Promi
 const GENERATED_VIDEO_POLL_MS = 4000
 // No hard deadline: keep tracking/downloading until done conditions are met.
 const GENERATED_VIDEO_DEADLINE_MS = Number.POSITIVE_INFINITY
+/** Max retry attempts per failed slot (e.g. 13.mp4), counting each click attempt (success or timeout); then skip. */
+const FAILED_GENERATION_MAX_RETRY_CLICKS = 2
 const RETRY_RATE_LIMIT_BASE_COOLDOWN_MS = 60 * 1000
 const RETRY_RATE_LIMIT_JITTER_MS = 15 * 1000
 /** Delay between starting each download (click 1080p); do not wait for the previous download to finish. */
@@ -1197,12 +1420,28 @@ export async function clickRetryOnFirstFailedTile(page: Page): Promise<boolean> 
   if (n === 0) return false
   const firstFailed = failed.first()
   const retryBtn = firstFailed.locator(S.generatedFailedRetryBtn).first()
+  const doClick = () => retryBtn.click({ timeout: 15000 })
+  await bringProjectPageToFront(page)
+  await dismissAccidentalBlockingUI(page, { stepLabel: 'Thử lại tile lỗi (đầu tiên)' })
   try {
-    await retryBtn.click({ timeout: 15000 })
+    await doClick()
     stepLog('Clicked retry on failed video tile')
     return true
   } catch (e) {
-    stepLog(`Retry click failed: ${(e as Error).message}`)
+    const msg = (e as Error).message
+    if (/intercepts pointer|Timeout/i.test(msg)) {
+      stepLog('Retry blocked by overlay/modal — đóng và thử lại')
+      await dismissAccidentalBlockingUI(page, { stepLabel: 'Thử lại tile (sau khi bị chặn)' })
+      try {
+        await doClick()
+        stepLog('Clicked retry on failed video tile (after dismiss)')
+        return true
+      } catch (e2) {
+        stepLog(`Retry click failed: ${(e2 as Error).message}`)
+        return false
+      }
+    }
+    stepLog(`Retry click failed: ${msg}`)
     return false
   }
 }
@@ -1227,12 +1466,28 @@ export async function clickRetryOnFailedTileByTileId(page: Page, tileId: string)
   const visible = await tile.isVisible().catch(() => false)
   if (!visible) return false
   const retryBtn = tile.locator(S.generatedFailedRetryBtn).first()
+  const doClick = () => retryBtn.click({ timeout: 15000 })
+  await bringProjectPageToFront(page)
+  await dismissAccidentalBlockingUI(page, { stepLabel: `Thử lại video (tile ${tileId.slice(0, 12)}…)` })
   try {
-    await retryBtn.click({ timeout: 15000 })
+    await doClick()
     stepLog(`Clicked retry on failed tile ${tileId}`)
     return true
   } catch (e) {
-    stepLog(`Retry click failed for tile ${tileId}: ${(e as Error).message}`)
+    const msg = (e as Error).message
+    if (/intercepts pointer|Timeout/i.test(msg)) {
+      stepLog(`Retry tile ${tileId} blocked — đóng modal/overlay rồi thử lại`)
+      await dismissAccidentalBlockingUI(page, { stepLabel: 'Thử lại video (sau khi click bị chặn)' })
+      try {
+        await doClick()
+        stepLog(`Clicked retry on failed tile ${tileId} (after dismiss)`)
+        return true
+      } catch (e2) {
+        stepLog(`Retry click failed for tile ${tileId}: ${(e2 as Error).message}`)
+        return false
+      }
+    }
+    stepLog(`Retry click failed for tile ${tileId}: ${msg}`)
     return false
   }
 }
@@ -1432,14 +1687,14 @@ async function openEditPageInNewTabAndTriggerResolution(
     await waitStable(editPage, 120)
 
     await withFocusLock(async () => {
-      await bringProjectPageToFront(editPage, { bypassLock: true })
+      await bringProjectPageToFront(editPage, { bypassLock: true, skipDismiss: true })
       const downloadBtn = editPage.locator(S.editPageDownloadBtn).first()
       await downloadBtn.waitFor({ state: 'visible', timeout: 20000 })
       const clickDeadline = Date.now() + EDIT_PAGE_DOWNLOAD_CLICK_TIMEOUT_MS
       let clickedDownload = false
       while (Date.now() < clickDeadline) {
         try {
-          await bringProjectPageToFront(editPage, { bypassLock: true })
+          await bringProjectPageToFront(editPage, { bypassLock: true, skipDismiss: true })
           await downloadBtn.scrollIntoViewIfNeeded().catch(() => null)
           await downloadBtn.click({ timeout: 8000 })
           clickedDownload = true
@@ -1459,17 +1714,17 @@ async function openEditPageInNewTabAndTriggerResolution(
         resolution === '4k' ? S.editPage4k : resolution === '720p' ? S.editPage720p : S.editPage1080p
       const resBtn = editPage.locator(resolutionSelector).first()
       try {
-        await bringProjectPageToFront(editPage, { bypassLock: true })
+        await bringProjectPageToFront(editPage, { bypassLock: true, skipDismiss: true })
         await resBtn.waitFor({ state: 'visible', timeout: 8000 })
       } catch {
         // Retry opening resolution menu once (submenu can fail first time).
-        await bringProjectPageToFront(editPage, { bypassLock: true })
+        await bringProjectPageToFront(editPage, { bypassLock: true, skipDismiss: true })
         await downloadBtn.click().catch(() => null)
         await waitStable(editPage, 250)
         await resBtn.waitFor({ state: 'visible', timeout: 8000 })
       }
       try {
-        await bringProjectPageToFront(editPage, { bypassLock: true })
+        await bringProjectPageToFront(editPage, { bypassLock: true, skipDismiss: true })
         await resBtn.click()
       } catch {
         // Fallback JS click for flaky overlay cases.
@@ -1789,8 +2044,8 @@ export async function getParsedGeneratedListWithFallback(page: Page): Promise<Pa
 
 /**
  * Track the generated list (virtuoso-item-list), download each video as soon as it's done (no waiting for all).
- * Preserves order: 1.mp4, 2.mp4, ... by slot. If any tile fails, click retry right away and track so the
- * re-generated video is saved with the correct filename (e.g. 5.mp4).
+ * Preserves order: 1.mp4, 2.mp4, ... by slot. If any tile fails, click retry (at most FAILED_GENERATION_MAX_RETRY_CLICKS
+ * attempts per output slot, e.g. 13.mp4) then skip so the tracker does not loop forever on stuck failures.
  * When opts.actionQueue is provided, all UI work (retries + 1080p clicks) is enqueued and runs after any submission; submission and download actions never run at the same time, so the flow of entering prompts and generating videos is not interrupted (we never navigate away during a submission).
  */
 export async function flowWaitAndDownloadAllGeneratedVideos1080pUsingParser(
@@ -1808,7 +2063,9 @@ export async function flowWaitAndDownloadAllGeneratedVideos1080pUsingParser(
   const downloadedWorkflowKeys = new Set<string>()
   const workflowAssignedOutputNames = new Map<string, string>()
   const reservedOutputNames = new Set<string>()
-  const retriedTileIds = new Set<string>()
+  /** Retry attempt count per logical slot (outputFileName); tileId can change after each fail. */
+  const failedGenerationRetryAttemptsBySlot = new Map<string, number>()
+  const skippedAfterMaxRetriesLogged = new Set<string>()
   const permanentUpsampleFailures = new Set<string>()
   const permanentUpsampleFailureWorkflowKeys = new Set<string>()
   const downloadErrorCounts = new Map<string, number>()
@@ -1832,6 +2089,11 @@ export async function flowWaitAndDownloadAllGeneratedVideos1080pUsingParser(
     if (!Number.isFinite(n) || n < 1) n = 1
     while (reservedOutputNames.has(`${n}.mp4`) || downloadedOutputNames.has(`${n}.mp4`)) n++
     return `${n}.mp4`
+  }
+
+  const failedRetrySlotKey = (f: { outputFileName: string; tileId: string }): string => {
+    const name = (f.outputFileName ?? '').trim()
+    return name.length > 0 ? name : f.tileId
   }
 
   stepLog(
@@ -1861,12 +2123,31 @@ export async function flowWaitAndDownloadAllGeneratedVideos1080pUsingParser(
     if (data.totalVideoSlots > maxObservedTotalSlots) maxObservedTotalSlots = data.totalVideoSlots
     pollCount++
 
+    // Không Escape khi Step 4/5 đang mở dialog ô nhập — poll song song sẽ đóng [role=dialog] / phá import ảnh.
+    if (!isImageImportBusy(page) && !isPromptInputBusy(page)) {
+      const periodic = pollCount >= 5 && pollCount % 6 === 0
+      const emptySlots =
+        pollCount > 6 &&
+        data.totalVideoSlots === 0 &&
+        maxObservedTotalSlots > 0 &&
+        pollCount % 4 === 0
+      if (periodic) {
+        await dismissAccidentalBlockingUI(page, { stepLabel: 'Theo dõi tải video (định kỳ)', skipNotify: true })
+      } else if (emptySlots) {
+        await dismissAccidentalBlockingUI(page, {
+          stepLabel: 'Theo dõi tải — danh sách slot = 0 (có thể overlay che)',
+          skipNotify: true,
+        })
+      }
+    }
+
     if (pollCount === 1 || (data.videos.length === 0 && expectedCount > 0))
       stepLog(`Poll #${pollCount}: videos=${data.videos.length} generating=${data.generating.length} failed=${data.failed.length} rows=${data.rows.length} totalSlots=${data.totalVideoSlots}`)
 
     if (opts.onProgress) opts.onProgress(downloadedOutputNames.size)
 
-    const hasWork = data.failed.some(f => !retriedTileIds.has(f.tileId)) ||
+    const hasWork =
+      data.failed.some(f => (failedGenerationRetryAttemptsBySlot.get(failedRetrySlotKey(f)) ?? 0) < FAILED_GENERATION_MAX_RETRY_CLICKS) ||
       data.videos.some(v => {
         const key = workflowKeyForTile(v.workflowId, v.outputFileName)
         return !downloadedWorkflowKeys.has(key) && !permanentUpsampleFailureWorkflowKeys.has(key)
@@ -1879,8 +2160,20 @@ export async function flowWaitAndDownloadAllGeneratedVideos1080pUsingParser(
         }
         let pendingDownloadPromises: Promise<unknown>[] = []
         let pendingSuccessfulItems: Array<{ tileId: string; outputPath: string; outputFileName: string; workflowKey: string }> = []
+        const retriedFailedSlotThisPoll = new Set<string>()
         for (const f of data.failed) {
-          if (retriedTileIds.has(f.tileId)) continue
+          const slotKey = failedRetrySlotKey(f)
+          if (retriedFailedSlotThisPoll.has(slotKey)) continue
+          const attemptsSoFar = failedGenerationRetryAttemptsBySlot.get(slotKey) ?? 0
+          if (attemptsSoFar >= FAILED_GENERATION_MAX_RETRY_CLICKS) {
+            if (!skippedAfterMaxRetriesLogged.has(slotKey)) {
+              skippedAfterMaxRetriesLogged.add(slotKey)
+              stepLog(
+                `Failed ${f.outputFileName} (${slotKey}): đã thử retry ${FAILED_GENERATION_MAX_RETRY_CLICKS} lần — bỏ qua`
+              )
+            }
+            continue
+          }
           if (Date.now() < nextRetryAllowedAt) {
             const remainSec = Math.ceil((nextRetryAllowedAt - Date.now()) / 1000)
             stepLog(`Failed ${f.outputFileName} (id=${f.tileId}) → retry delayed (${remainSec}s cooldown)`)
@@ -1892,10 +2185,12 @@ export async function flowWaitAndDownloadAllGeneratedVideos1080pUsingParser(
             err.includes('too fast') ||
             err.includes('đợi một chút') ||
             err.includes('wait a bit')
+          retriedFailedSlotThisPoll.add(slotKey)
           const didRetry = await clickRetryOnFailedTileByTileId(page, f.tileId)
-          stepLog(`Failed ${f.outputFileName} (id=${f.tileId})${f.errorMessage ? `: "${f.errorMessage}"` : ''} → retry ${didRetry ? 'clicked' : 'skip'}`)
-          // Only mark retried after a successful click; otherwise keep retrying next poll (policy / DOM variants).
-          if (didRetry) retriedTileIds.add(f.tileId)
+          failedGenerationRetryAttemptsBySlot.set(slotKey, attemptsSoFar + 1)
+          stepLog(
+            `Failed ${f.outputFileName} (id=${f.tileId})${f.errorMessage ? `: "${f.errorMessage}"` : ''} → retry ${didRetry ? 'clicked' : 'skip'} (${attemptsSoFar + 1}/${FAILED_GENERATION_MAX_RETRY_CLICKS})`
+          )
           if (didRetry) {
             if (isRateLimitedFailure) {
               const cooldownMs = RETRY_RATE_LIMIT_BASE_COOLDOWN_MS + Math.floor(Math.random() * (RETRY_RATE_LIMIT_JITTER_MS + 1))
@@ -2045,7 +2340,9 @@ export async function flowWaitAndDownloadAllGeneratedVideos1080pUsingParser(
     // Require at least one download (or expectedCount===0) so we don't exit on a transient "0 slots" DOM state
     // (e.g. list briefly shows only image tiles after a generating placeholder disappears).
     const anyGenerating = data.generating.length > 0
-    const anyFailedWithRetryLeft = data.failed.some(f => !retriedTileIds.has(f.tileId))
+    const anyFailedWithRetryLeft = data.failed.some(
+      f => (failedGenerationRetryAttemptsBySlot.get(failedRetrySlotKey(f)) ?? 0) < FAILED_GENERATION_MAX_RETRY_CLICKS
+    )
     const anyReadyVideoUndownloaded = data.videos.some(v => {
       const key = workflowKeyForTile(v.workflowId, v.outputFileName)
       return !downloadedWorkflowKeys.has(key) && !permanentUpsampleFailureWorkflowKeys.has(key)
@@ -2143,6 +2440,7 @@ export async function runVeo3CreateVideoFlow(
   opts: Veo3FlowOptions = {}
 ): Promise<{ uploadLog?: UploadLogEntry[] } | void> {
   resetVeo3TraceLogs()
+  await installFlowUserInterferenceMonitor(page)
   stepLog('——— Veo3 create-video flow start ———')
   await flowClickNewProject(page)
   await flowSetVideoMode(page, {
@@ -2195,6 +2493,7 @@ export async function runVeo3ProjectFlowByGroups(
   downloadOpts?: { outputDir: string; expectedCount: number; timeoutMs?: number; onProgress?: (completedCount: number) => void; unordered?: boolean; downloadResolution?: Veo3DownloadResolution }
 ): Promise<string[]> {
   resetVeo3TraceLogs()
+  await installFlowUserInterferenceMonitor(page)
   const mode = opts.videoMode ?? 'frames'
   const delayMinMs = opts.delayMinMs ?? DELAY_MIN_MS
   const delayMaxMs = opts.delayMaxMs ?? DELAY_MAX_MS
@@ -2284,6 +2583,7 @@ export async function runVeo3ProjectFlow(
   opts: Veo3FlowOptions & { delayBetweenPromptsMs?: number; scriptIndexPerJob?: number[] } = {}
 ): Promise<{ uploadLog?: UploadLogEntry[] } | void> {
   resetVeo3TraceLogs()
+  await installFlowUserInterferenceMonitor(page)
   const mode = opts.videoMode ?? 'frames'
   const delayMs = opts.delayBetweenPromptsMs ?? DELAY_BETWEEN_PROMPTS_MS
   const scriptIndexPerJob = opts.scriptIndexPerJob

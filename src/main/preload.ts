@@ -23,6 +23,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   logToFile:      (payload: { level: string; message: string; source?: string }) => ipcRenderer.invoke('log-to-file', payload),
   getLogDirectory: () => ipcRenderer.invoke('get-log-directory'),
   openLogFolder:   () => ipcRenderer.invoke('open-log-folder'),
+  showItemInFolder: (filePath: string) => ipcRenderer.invoke('show-item-in-folder', filePath) as Promise<boolean>,
   checkForUpdatesNow: () => ipcRenderer.invoke('check-for-updates-now'),
   installDownloadedUpdate: () => ipcRenderer.invoke('install-downloaded-update'),
 
@@ -62,4 +63,26 @@ contextBridge.exposeInMainWorld('electronAPI', {
   veo3RunQueue: (queue: any[]) => ipcRenderer.invoke('veo3-run-queue', queue),
   onVeo3ProfileStatus: (cb: (e: any, d: { profileId: string; loggedIn: boolean; email?: string; error?: string }) => void) =>
     ipcRenderer.on('veo3-profile-status', cb),
+  onVeo3FlowNotify: (
+    cb: (
+      e: any,
+      d: {
+        projectId?: string
+        jobId?: string
+        kind: 'blocking-dismissed'
+        stepLabel: string
+        message: string
+      }
+    ) => void
+  ) => ipcRenderer.on('veo3-flow-notify', cb),
+  onVeo3ProfileBlocked: (
+    cb: (
+      e: any,
+      d: {
+        profileId: string
+        reason?: string
+        message?: string
+      }
+    ) => void
+  ) => ipcRenderer.on('veo3-profile-blocked', cb),
 })

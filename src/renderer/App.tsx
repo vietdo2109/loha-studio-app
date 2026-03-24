@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react"
+import { useState, useEffect, useCallback, useRef } from "react"
 import type { Platform, AppPanel, Project, QueueProject, QueueJob, JobStatus, AcctStatus, Veo3Project, Veo3QueueProject, Veo3QueueJob, Script } from "./types"
 declare const __APP_NAME__: string
 import { GlobalStyle } from "./GlobalStyle"
@@ -17,6 +17,8 @@ import {
   Veo3ProfilesModal,
   GrokProfilesModal,
   ErrorPanel,
+  FlowErrorModal,
+  BlockingUiNotification,
 } from "./components"
 import type { GrokProfileRow } from "./components/GrokProfilesModal"
 
@@ -74,6 +76,18 @@ export default function App() {
   const [activationError, setActivationError] = useState("")
   const [updateStatus, setUpdateStatus] = useState<string>("")
   const [updateReady, setUpdateReady] = useState(false)
+  /** Modal lỗi tự động (không hiển thị log kỹ thuật trong UI) */
+  const [flowFailureModal, setFlowFailureModal] = useState<{
+    stepLabel: string
+    message: string
+    failureIndex: number
+    screenshotPath?: string
+  } | null>(null)
+  const sessionJobFailCountRef = useRef(0)
+  const [blockingUiNotice, setBlockingUiNotice] = useState<{ stepLabel: string; message: string } | null>(null)
+  const [veo3ProfileBlockedNotice, setVeo3ProfileBlockedNotice] = useState<{ profileId: string; message: string } | null>(null)
+  const closeBlockingUiNotice = useCallback(() => setBlockingUiNotice(null), [])
+  const closeVeo3ProfileBlockedNotice = useCallback(() => setVeo3ProfileBlockedNotice(null), [])
 
   const appName = typeof __APP_NAME__ !== 'undefined' ? __APP_NAME__ : 'Loha Studio'
   useEffect(() => {
@@ -265,6 +279,7 @@ export default function App() {
     }
     setIsStarting(true)
     setErrors([])
+    sessionJobFailCountRef.current = 0
     const api = (window as any).electronAPI
     if (api?.logToFile) {
       api.logToFile({ level: 'info', message: `Session started: ${queueToRun.length} projects, ${queueToRun.reduce((s, q) => s + q.jobs.length, 0)} jobs (chỉ job chưa xong)`, source: 'renderer' })
@@ -365,13 +380,20 @@ export default function App() {
       )
     }
 
-    const handleJobFailed = (_e: any, payload: { projectId: string; jobId: string; error: string }) => {
+    const handleJobFailed = (_e: any, payload: {
+      projectId: string
+      jobId: string
+      error: string
+      errorDetail?: string
+      stepLabel?: string
+      screenshotPath?: string
+    }) => {
       setQueue(prev =>
         prev.map(p => p.id !== payload.projectId ? p : ({
           ...p,
           jobs: p.jobs.map(j =>
             j.id === payload.jobId
-              ? { ...j, status: "failed" as JobStatus, error: payload.error, progress: j.progress }
+              ? { ...j, status: "failed" as JobStatus, error: payload.error, errorDetail: payload.errorDetail, progress: j.progress }
               : j
           ),
         }))
@@ -381,13 +403,18 @@ export default function App() {
           ...p,
           jobs: p.jobs.map(j =>
             j.id === payload.jobId
-              ? { ...j, status: "failed" as JobStatus, error: payload.error, progress: j.progress }
+              ? { ...j, status: "failed" as JobStatus, error: payload.error, errorDetail: payload.errorDetail, progress: j.progress }
               : j
           ),
         }))
       )
-      setErrors(prev => [...prev, payload.error])
-      ;(window as any).electronAPI?.logToFile?.({ level: 'error', message: `Job failed [${payload.jobId}]: ${payload.error}`, source: 'renderer' })
+      sessionJobFailCountRef.current += 1
+      setFlowFailureModal({
+        stepLabel: payload.stepLabel ?? "Trong quá trình chạy tự động",
+        message: payload.error,
+        failureIndex: sessionJobFailCountRef.current,
+      })
+      ;(window as any).electronAPI?.logToFile?.({ level: 'error', message: `Job failed [${payload.jobId}]: ${payload.error}${payload.errorDetail ? ` | ${payload.errorDetail}` : ''}`, source: 'renderer' })
     }
 
     const handleSessionDone = (_e: any, payload: { success: boolean; summary: { total: number; success: number; failed: number } }) => {
@@ -397,7 +424,7 @@ export default function App() {
       const api = (window as any).electronAPI
       api?.logToFile?.({ level: payload.summary.failed > 0 ? 'warn' : 'info', message: `Session done: ${payload.summary.success}/${payload.summary.total} success, ${payload.summary.failed} failed`, source: 'renderer' })
       if (!payload.success || payload.summary.failed > 0) {
-        setErrors(prev => [...prev, `Session finished with ${payload.summary.failed} failed jobs out of ${payload.summary.total}.`])
+        setErrors(prev => [...prev, `Phiên kết thúc: ${payload.summary.failed}/${payload.summary.total} job lỗi.`])
       }
     }
 
@@ -407,6 +434,29 @@ export default function App() {
     api.onJobFailed(handleJobFailed)
     api.onSessionDone(handleSessionDone)
 
+    const handleVeo3FlowNotify = (
+      _e: unknown,
+      payload: { kind?: string; stepLabel?: string; message?: string }
+    ) => {
+      if (payload?.kind !== 'blocking-dismissed') return
+      setBlockingUiNotice({
+        stepLabel: payload.stepLabel ?? '',
+        message: payload.message ?? '',
+      })
+    }
+    api.onVeo3FlowNotify?.(handleVeo3FlowNotify)
+
+    const handleVeo3ProfileBlocked = (
+      _e: unknown,
+      payload: { profileId?: string; message?: string }
+    ) => {
+      const profileId = payload?.profileId ?? 'unknown'
+      const message = payload?.message ?? `Profile ${profileId} bị server block 403, vui lòng mở profile mới.`
+      setVeo3ProfileBlockedNotice({ profileId, message })
+      setErrors(prev => [...prev, message])
+    }
+    api.onVeo3ProfileBlocked?.(handleVeo3ProfileBlocked)
+
     return () => {
       try {
         api.removeAllListeners?.("account-status")
@@ -414,6 +464,8 @@ export default function App() {
         api.removeAllListeners?.("job-completed")
         api.removeAllListeners?.("job-failed")
         api.removeAllListeners?.("session-done")
+        api.removeAllListeners?.("veo3-flow-notify")
+        api.removeAllListeners?.("veo3-profile-blocked")
         api.removeAllListeners?.("license-status")
         api.removeAllListeners?.("app-update-status")
       } catch {}
@@ -642,6 +694,7 @@ export default function App() {
       return
     }
     setIsStartingVeo3(true)
+    sessionJobFailCountRef.current = 0
     const res = await api.veo3RunQueue(veo3Queue)
     if (!res?.success) {
       setErrors(prev => [...prev, res?.error ?? 'Chạy queue thất bại.'])
@@ -1312,6 +1365,67 @@ export default function App() {
           onDelete={handleDeleteScript}
           scripts={scripts}
         />
+      )}
+      {flowFailureModal != null && (
+        <FlowErrorModal
+          stepLabel={flowFailureModal.stepLabel}
+          message={flowFailureModal.message}
+          failureIndex={flowFailureModal.failureIndex}
+          screenshotPath={flowFailureModal.screenshotPath}
+          onClose={() => setFlowFailureModal(null)}
+        />
+      )}
+      {blockingUiNotice != null && (
+        <BlockingUiNotification
+          stepLabel={blockingUiNotice.stepLabel}
+          message={blockingUiNotice.message}
+          onClose={closeBlockingUiNotice}
+        />
+      )}
+      {veo3ProfileBlockedNotice != null && (
+        <div
+          role="alert"
+          style={{
+            position: 'fixed',
+            bottom: 20,
+            right: 20,
+            zIndex: 10060,
+            width: 'min(540px, calc(100% - 32px))',
+            padding: '14px 16px',
+            borderRadius: 10,
+            background: 'var(--panel)',
+            border: '1px solid rgba(239, 68, 68, 0.45)',
+            boxShadow: '0 8px 28px rgba(0,0,0,0.35)',
+          }}
+        >
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)', marginBottom: 6 }}>
+                Profile Veo3 bị server chặn
+              </div>
+              <div style={{ fontSize: 13, color: 'var(--text)', lineHeight: 1.5 }}>
+                {veo3ProfileBlockedNotice.message}
+              </div>
+            </div>
+            <button
+              type="button"
+              aria-label="Đóng"
+              onClick={closeVeo3ProfileBlockedNotice}
+              style={{
+                flexShrink: 0,
+                border: 'none',
+                background: 'transparent',
+                color: 'var(--text3)',
+                cursor: 'pointer',
+                fontSize: 18,
+                lineHeight: 1,
+                padding: '0 4px',
+              }}
+            >
+              ×
+            </button>
+          </div>
+        </div>
       )}
     </>
   )

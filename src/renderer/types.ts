@@ -51,6 +51,8 @@ export interface QueueJob {
   progress: number
   accountId?: string
   error?:   string
+  /** Chi tiết lỗi kỹ thuật (tooltip / hỗ trợ), tùy chọn */
+  errorDetail?: string
   /** Chế độ kịch bản + nhiều ảnh: ảnh thứ imageIndex trong folder (0-based), giống Veo3 */
   imageIndex?: number
 }
@@ -113,6 +115,7 @@ export interface Veo3QueueJob {
   progress: number
   profileId?: string
   error?:   string
+  errorDetail?: string
   /** When project uses 1 script + multiple images: which image (0-based) this job uses; each image runs through all prompts. */
   imageIndex?: number
   /** @deprecated Use imageIndex for 1-script-per-project flow (1 script, N images, each image runs all prompts). */

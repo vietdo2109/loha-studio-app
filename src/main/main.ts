@@ -16,7 +16,7 @@
  *   grok-profile-status { profileId, loggedIn, email?, error? }
  *   job-progress    { projectId, jobId, progress }
  *   job-completed   { projectId, jobId, outputPath }
- *   job-failed      { projectId, jobId, error }
+ *   job-failed      { projectId, jobId, error, errorDetail?, stepLabel?, screenshotPath? }
  *   session-done    { success, summary }
  */
 
@@ -31,6 +31,18 @@ import { BrowserWorker } from '../automation/BrowserWorker'
 import { parseCredentialsFile } from '../automation/AccountLogin'
 import { resolveImageForIndex, resolveImagesForIndex, resolveAllImagePathsFromDir, listImagePathsFromDir } from '../automation/inputParser'
 import { initAppLogger, appLog, getLogDirectory } from './logger'
+import { captureVeo3FlowPageScreenshot } from './flowErrorScreenshot'
+import { createVeo3RunDirectory, pruneVeo3RunDirectories, MAX_VEO3_RUN_RECORDS } from './runLogRetention'
+import {
+  setFlowLogSink,
+  setFlowLogContext,
+  clearFlowLogContext,
+  formatPayloadForFile,
+  humanizePlaywrightError,
+  describeFlowStepFromError,
+  type FlowLogPayload,
+} from '../automation/flowActionLog'
+import { setBlockingUiNotify } from '../automation/blockingUiNotify'
 import { runVeo3CreateVideoFlow, runVeo3ProjectFlow, runVeo3ProjectFlowByGroups } from '../automation/veo3Flow'
 import { VEO3_SELECTORS as VEO3_SEL } from '../automation/veo3Selectors'
 
@@ -425,6 +437,56 @@ function send(channel: string, data: any) {
   mainWindow?.webContents.send(channel, data)
 }
 
+/**
+ * Gắn nhật ký phiên Flow: mỗi lần chạy = một thư mục `logs/runs/<runId>/` (flow-actions.log + file khác cùng phiên).
+ * Chỉ giữ tối đa MAX_VEO3_RUN_RECORDS thư mục gần nhất.
+ */
+function beginVeo3FlowLogSession(meta: { projectId?: string; jobId?: string }): { end: () => void; runDir: string | null } {
+  setFlowLogContext(meta)
+  const logDir = getLogDirectory()
+  let fp: string | null = null
+  let runDir: string | null = null
+  if (logDir) {
+    try {
+      const created = createVeo3RunDirectory(logDir)
+      runDir = created.runDir
+      fp = path.join(runDir, 'flow-actions.log')
+      fs.writeFileSync(
+        fp,
+        `# Flow — ${new Date().toISOString()}\n# projectId=${meta.projectId ?? ''} jobId=${meta.jobId ?? ''}\n# runDir=${runDir}\n\n`,
+        'utf8'
+      )
+      pruneVeo3RunDirectories(logDir, MAX_VEO3_RUN_RECORDS)
+    } catch {
+      fp = null
+      runDir = null
+    }
+  }
+  /** Chỉ ghi file — không gửi log kỹ thuật lên renderer (tránh lộ logic + spam UI). */
+  const sink = (p: FlowLogPayload) => {
+    if (fp) {
+      try {
+        fs.appendFileSync(fp, formatPayloadForFile(p), 'utf8')
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+  setFlowLogSink(sink)
+  setBlockingUiNotify(payload => {
+    send('veo3-flow-notify', { ...meta, ...payload })
+  })
+  const end = () => {
+    setFlowLogSink(null)
+    setBlockingUiNotify(null)
+    clearFlowLogContext()
+    if (fp) {
+      appLog('info', `Nhật ký thao tác Flow: ${fp}`, 'veo3')
+    }
+  }
+  return { end, runDir }
+}
+
 // ─── IPC: File pickers ────────────────────────────────────────────────────────
 
 ipcMain.handle('select-directory', async () => {
@@ -482,6 +544,19 @@ ipcMain.handle('open-log-folder', async () => {
   if (!dir) return
   const { shell } = await import('electron')
   shell.openPath(dir).catch(() => {})
+})
+
+/** Hiển thị file trong Explorer (ảnh chụp lỗi Flow). */
+ipcMain.handle('show-item-in-folder', async (_e, filePath: string) => {
+  if (!filePath || typeof filePath !== 'string') return false
+  try {
+    if (!fs.existsSync(filePath)) return false
+  } catch {
+    return false
+  }
+  const { shell } = await import('electron')
+  shell.showItemInFolder(filePath)
+  return true
 })
 
 ipcMain.handle('check-for-updates-now', async () => {
@@ -1014,14 +1089,26 @@ async function runWorkerLoop(
       // OUT_OF_QUOTA → account này hết quota, dừng loop, requeue job không làm được
       if (errMsg.includes('OUT_OF_QUOTA')) {
         send('account-status', { accountId: acct.id, email: acct.email, status: 'failed', error: 'Hết quota' })
-        send('job-failed', { projectId: job.projectId, jobId: job.jobId, error: 'Hết quota — requeue' })
+        send('job-failed', {
+          projectId: job.projectId,
+          jobId: job.jobId,
+          error: 'Hết quota — requeue',
+          stepLabel: 'Grok Imagine — hết quota tài khoản',
+        })
         // Đẩy job lại cuối queue (bằng cách giảm jobIndex không thực tế trong JS đơn luồng
         // nên ghi nhận là failed, cần cơ chế requeue riêng nếu muốn)
         cb.onFailed()
         break
       }
 
-      send('job-failed', { projectId: job.projectId, jobId: job.jobId, error: errMsg })
+      const { user, tech } = humanizePlaywrightError(err)
+      send('job-failed', {
+        projectId: job.projectId,
+        jobId: job.jobId,
+        error: user,
+        errorDetail: tech,
+        stepLabel: 'Grok Imagine — chạy job tự động',
+      })
       cb.onFailed()
     }
   }
@@ -1409,6 +1496,7 @@ ipcMain.handle('veo3-run-job', async (_event, payload: {
   }
   entry.page.on('request', onReq)
   entry.page.on('response', onRes)
+  const { end: endFlowLog, runDir } = beginVeo3FlowLogSession({ projectId, jobId })
   try {
     if (projectId && jobId && !debugUploadOnly) {
       send('job-progress', { projectId, jobId, progress: 5 })
@@ -1425,9 +1513,9 @@ ipcMain.handle('veo3-run-job', async (_event, payload: {
       debugUploadOnly,
     })
     if (result && 'uploadLog' in result && result.uploadLog) {
-      const logDir = getLogDirectory()
-      if (logDir) {
-        const fp = path.join(logDir, `veo3-upload-log-${Date.now()}.json`)
+      const base = runDir ?? getLogDirectory()
+      if (base) {
+        const fp = path.join(base, 'veo3-upload-log.json')
         try {
           fs.writeFileSync(fp, JSON.stringify(result.uploadLog, null, 2), 'utf-8')
           appLog('info', `Veo3 upload log: ${result.uploadLog.length} request(s) → ${fp}`, 'main')
@@ -1443,20 +1531,34 @@ ipcMain.handle('veo3-run-job', async (_event, payload: {
     return { success: true }
   } catch (err: any) {
     const msg = err?.message ?? String(err)
+    const { user, tech } = humanizePlaywrightError(err)
     const isClosed = /target page, context or browser has been closed|page.*closed|context.*closed/i.test(msg)
     if (isClosed) {
       removeVeo3Entry(profileIdUsed)
       return { success: false, error: 'Trình duyệt profile đã đóng. Vui lòng mở lại profile và thử lại.' }
     }
-    if (projectId && jobId) send('job-failed', { projectId, jobId, error: msg })
+    const logDirErr = getLogDirectory()
+    const screenshotPath = await captureVeo3FlowPageScreenshot(entry.page, runDir ?? logDirErr, jobId ?? 'veo3-run-job')
+    if (screenshotPath) appLog('info', `Veo3 error screenshot: ${screenshotPath}`, 'veo3')
+    if (projectId && jobId) {
+      send('job-failed', {
+        projectId,
+        jobId,
+        error: user,
+        errorDetail: tech,
+        stepLabel: describeFlowStepFromError(err),
+        screenshotPath: screenshotPath ?? undefined,
+      })
+    }
     appLog('error', `Veo3 run job: ${msg}`, 'main')
-    return { success: false, error: msg }
+    return { success: false, error: user, errorDetail: tech }
   } finally {
+    endFlowLog()
     entry.page.off('request', onReq)
     entry.page.off('response', onRes)
-    const logDir = getLogDirectory()
-    if (logDir && networkLog.length > 0) {
-      const fp = path.join(logDir, `veo3-network-${Date.now()}.json`)
+    const baseNet = runDir ?? getLogDirectory()
+    if (baseNet && networkLog.length > 0) {
+      const fp = path.join(baseNet, 'veo3-network.json')
       try {
         fs.writeFileSync(fp, JSON.stringify(networkLog, null, 2), 'utf-8')
         appLog('info', `Veo3 network log: ${networkLog.length} entries → ${fp}`, 'main')
@@ -1505,7 +1607,7 @@ ipcMain.handle('veo3-run-queue', async (_event,   queue: Array<{
   async function runProjectOnEntry(
     entry: { page: any; profileId: string },
     project: typeof projectsWithPending[0]
-  ): Promise<{ success: boolean }> {
+  ): Promise<{ success: boolean; profileBlocked?: boolean }> {
     const prompts = project.pendingJobs.map((j: { prompt: string }) => j.prompt)
     const startDir = project.startFramesDir || project.imageDir || ''
     const endDir = project.endFramesDir || ''
@@ -1576,6 +1678,10 @@ ipcMain.handle('veo3-run-queue', async (_event,   queue: Array<{
     const onRes = (res: { url: () => string; status: () => number }) => { networkLog.push({ type: 'response', url: res.url(), status: res.status(), when: Date.now() }) }
     entry.page.on('request', onReq)
     entry.page.on('response', onRes)
+    const { end: endFlowLog, runDir } = beginVeo3FlowLogSession({
+      projectId: project.id,
+      jobId: project.pendingJobs[0]?.id,
+    })
     try {
       await entry.page.goto(VEO3_FLOW_URL, { waitUntil: 'domcontentloaded' })
       for (const job of project.pendingJobs) {
@@ -1611,18 +1717,44 @@ ipcMain.handle('veo3-run-queue', async (_event,   queue: Array<{
       return { success: true }
     } catch (err: any) {
       const msg = err?.message ?? String(err)
+      const { user, tech } = humanizePlaywrightError(err)
+      const profileBlocked = /VEO3_PROFILE_BLOCKED_403|forbidden|recaptcha|bot detect|policy/i.test(msg)
       if (/target page, context or browser has been closed|page.*closed|context.*closed/i.test(msg)) removeVeo3Entry(entry.profileId)
+      if (profileBlocked) {
+        appLog('warn', `Veo3 profile ${entry.profileId} appears blocked (403/recaptcha). Stop using this profile for current queue run.`, 'veo3')
+        send('veo3-profile-blocked', {
+          profileId: entry.profileId,
+          reason: 'SERVER_BLOCK_403',
+          message: `Profile ${entry.profileId} bị server block 403, vui lòng mở profile mới.`,
+        })
+        removeVeo3Entry(entry.profileId)
+      }
+      const stepLabel = describeFlowStepFromError(err)
+      const logDirErr = getLogDirectory()
+      const screenshotPath = await captureVeo3FlowPageScreenshot(entry.page, runDir ?? logDirErr, project.id)
+      if (screenshotPath) appLog('info', `Veo3 error screenshot: ${screenshotPath}`, 'veo3')
       for (const job of project.pendingJobs) {
-        send('job-failed', { projectId: project.id, jobId: job.id, error: msg })
+        send('job-failed', {
+          projectId: project.id,
+          jobId: job.id,
+          error: user,
+          errorDetail: tech,
+          stepLabel,
+          screenshotPath: screenshotPath ?? undefined,
+        })
       }
       appLog('error', `Veo3 queue project: ${msg}`, 'main')
-      return { success: false }
+      return { success: false, profileBlocked }
     } finally {
+      endFlowLog()
       entry.page.off('request', onReq)
       entry.page.off('response', onRes)
-      const logDir = getLogDirectory()
-      if (logDir && networkLog.length > 0) {
-        try { fs.writeFileSync(path.join(logDir, `veo3-network-${Date.now()}.json`), JSON.stringify(networkLog, null, 2), 'utf-8') } catch (_) {}
+      const baseNet = runDir ?? getLogDirectory()
+      if (baseNet && networkLog.length > 0) {
+        try {
+          fs.writeFileSync(path.join(baseNet, 'veo3-network.json'), JSON.stringify(networkLog, null, 2), 'utf-8')
+          appLog('info', `Veo3 network log: ${networkLog.length} entries → ${path.join(baseNet, 'veo3-network.json')}`, 'main')
+        } catch (_) {}
       }
     }
   }
@@ -1634,7 +1766,8 @@ ipcMain.handle('veo3-run-queue', async (_event,   queue: Array<{
       const entry = { page: ent.page, profileId: ent.profileId }
       while (projectQueue.length > 0) {
         const project = projectQueue.shift()!
-        await runProjectOnEntry(entry, project)
+        const result = await runProjectOnEntry(entry, project)
+        if (result.profileBlocked) break
       }
     })
   )
