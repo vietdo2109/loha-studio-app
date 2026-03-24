@@ -21,6 +21,7 @@ export function Veo3ProfilesModal({
 }) {
   const [numInput, setNumInput] = useState(3)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [deletingId, setDeletingId] = useState<string | null>(null)
   useEffect(() => {
     onRefresh()
   }, [])
@@ -54,6 +55,29 @@ export function Veo3ProfilesModal({
     if (ids.length === 0) return
     onOpenSelected(ids)
     onRefresh()
+  }
+
+  const handleDeleteProfile = async (profileId: string) => {
+    const api = (window as any).electronAPI
+    if (!api?.veo3DeleteProfile) return
+    const ok = window.confirm(`Xóa profile ${profileId}? Hành động này sẽ xóa dữ liệu profile trên máy.`)
+    if (!ok) return
+    setDeletingId(profileId)
+    try {
+      const res = await api.veo3DeleteProfile(profileId)
+      if (!res?.success) {
+        window.alert(res?.error ?? `Không xóa được ${profileId}.`)
+        return
+      }
+      setSelectedIds(prev => {
+        const next = new Set(prev)
+        next.delete(profileId)
+        return next
+      })
+      onRefresh()
+    } finally {
+      setDeletingId(null)
+    }
   }
 
   return (
@@ -107,6 +131,17 @@ export function Veo3ProfilesModal({
               <span style={{ fontSize: 11, color: p.loggedIn ? "var(--accent2)" : "var(--text3)" }}>
                 {p.loggedIn ? (p.email ? `Đã đăng nhập: ${p.email}` : "Đã đăng nhập Google") : "Chưa đăng nhập"}
               </span>
+              <div style={{ marginLeft: "auto" }}>
+                <Btn
+                  size="sm"
+                  variant="danger"
+                  onClick={() => handleDeleteProfile(p.profileId)}
+                  disabled={deletingId != null}
+                  title="Xóa profile này khỏi máy"
+                >
+                  {deletingId === p.profileId ? "Đang xóa..." : "Xóa"}
+                </Btn>
+              </div>
             </div>
           ))
         )}

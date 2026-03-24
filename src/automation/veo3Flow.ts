@@ -6,6 +6,7 @@
 import { Page, Request, Response, Locator } from 'patchright'
 import * as path from 'path'
 import * as fs from 'fs'
+import { AsyncLocalStorage } from 'async_hooks'
 import { VEO3_SELECTORS as S, VEO3_FLOW_BASE, VEO3_PROJECT_URL_PATTERN, VEO3_EDIT_PAGE_URL_PATTERN } from './veo3Selectors'
 import {
   parseGeneratedContentListInPage,
@@ -19,12 +20,16 @@ import { installFlowUserInterferenceMonitor } from './userInterferenceMonitor'
 import { emitBlockingUiDismissed } from './blockingUiNotify'
 
 const DOM_STABLE_MS = 800
+const VEO3_MINIMAL_ACTION_LOG = process.env.VEO3_VERBOSE_LOG !== '1'
+const flowLogTagStore = new AsyncLocalStorage<string>()
 
 export type Veo3VideoMode = 'frames' | 'ingredients'
 export type Veo3AiModel = 'veo-3.1-fast' | 'veo-3.1-fast-lower-priority' | 'veo-3.1-quality'
 export type Veo3DownloadResolution = '720p' | '1080p' | '4k'
 
 export type Veo3FlowOptions = {
+  /** Short tag to split concurrent traces, e.g. "P1|a1b2c3". */
+  logTag?: string
   aiModel?: Veo3AiModel
   /** When 'image', uses flowSetImageMode (Hình ảnh) instead of flowSetVideoMode. */
   generationMode?: 'video' | 'image'
@@ -73,10 +78,28 @@ function resetVeo3TraceLogs(): void {
 }
 
 function stepLog(message: string): void {
-  const line = logAsciiVi(message)
+  const shouldKeepLine = (() => {
+    if (!VEO3_MINIMAL_ACTION_LOG) return true
+    const lower = message.toLowerCase()
+    if (lower.includes('[hard stop]') || lower.includes('[warn]') || lower.includes('error')) return true
+    const noisy = [
+      /^poll #\d+:/i,
+      /^done-shape reached but coverage not enough:/i,
+      /^forced virtualized-list sweep/i,
+      /^list found via fallback selector/i,
+      /^batch: no 1080p clicks succeeded, will retry on next poll$/i,
+      /^image import is executing; defer download\/retry actions this poll$/i,
+    ]
+    return !noisy.some((re) => re.test(message))
+  })()
+  if (!shouldKeepLine) return
+
+  const tag = flowLogTagStore.getStore()
+  const taggedMessage = tag ? `[${tag}] ${message}` : message
+  const line = logAsciiVi(taggedMessage)
   console.log(`[Veo3 flow] ${line}`)
-  const lower = message.toLowerCase()
-  if (message.includes('[TRACE') || message.includes('[TRACE image-import]')) {
+  const lower = taggedMessage.toLowerCase()
+  if (taggedMessage.includes('[TRACE') || taggedMessage.includes('[TRACE image-import]')) {
     flowEmit('detail', line)
   } else if (lower.includes('[hard stop]') || (lower.includes('error') && !lower.includes('no error'))) {
     flowEmit('error', line)
@@ -110,6 +133,11 @@ function stepLog(message: string): void {
   }
 }
 
+async function runWithFlowLogTag<T>(tag: string | undefined, fn: () => Promise<T>): Promise<T> {
+  if (!tag || tag.trim().length === 0) return fn()
+  return await flowLogTagStore.run(tag.trim(), fn)
+}
+
 function traceImportLog(message: string): void {
   if (!VEO3_TRACE_IMAGE_IMPORT) return
   stepLog(`[TRACE image-import] ${message}`)
@@ -135,19 +163,23 @@ async function waitStable(page: Page, ms = DOM_STABLE_MS) {
   await page.waitForTimeout(ms)
 }
 
-let focusLock = Promise.resolve<void>(undefined)
+const focusLockByPage = new WeakMap<Page, Promise<void>>()
 const promptInputBusyCounter = new WeakMap<Page, number>()
 const imageImportBusyCounter = new WeakMap<Page, number>()
 
-async function withFocusLock<T>(fn: () => Promise<T>): Promise<T> {
-  const prev = focusLock
+async function withFocusLock<T>(page: Page, fn: () => Promise<T>): Promise<T> {
+  const prev = focusLockByPage.get(page) ?? Promise.resolve<void>(undefined)
   let release!: () => void
-  focusLock = new Promise<void>(r => { release = r })
+  const nextLock = new Promise<void>(r => { release = r })
+  focusLockByPage.set(page, nextLock)
   await prev
   try {
     return await fn()
   } finally {
     release()
+    if (focusLockByPage.get(page) === nextLock) {
+      focusLockByPage.delete(page)
+    }
   }
 }
 
@@ -213,7 +245,7 @@ async function bringProjectPageToFront(
   opts: { bypassLock?: boolean; skipDismiss?: boolean } = {}
 ): Promise<void> {
   try {
-    if (!opts.bypassLock) await focusLock
+    if (!opts.bypassLock) await (focusLockByPage.get(page) ?? Promise.resolve())
     const p = page as unknown as { bringToFront?: () => Promise<void> }
     if (typeof p.bringToFront === 'function') {
       await p.bringToFront()
@@ -302,15 +334,51 @@ export async function flowClickNewProject(page: Page): Promise<void> {
   await withFlowAction(
     'Bấm "Dự án mới" và chờ vào trang dự án Flow',
     'Nút tạo project → chuyển URL dự án (tối đa ~20 giây)',
-    async () => {
+    async () => withFocusLock(page, async () => {
+      const promptBar = page
+        .locator('#__next div:has([role="textbox"][data-slate-editor="true"]):has(button:has(i:text-is("arrow_forward")))')
+        .first()
+
+      // If already inside a project, do not hard-require URL navigation again.
+      if (VEO3_PROJECT_URL_PATTERN.test(page.url()) || (await promptBar.isVisible().catch(() => false))) {
+        return
+      }
+
       const btn = page.locator(S.newProjectBtn).first()
-      await btn.waitFor({ state: 'visible', timeout: 15000 })
-      await Promise.all([
-        page.waitForURL(VEO3_PROJECT_URL_PATTERN, { timeout: 20000 }),
-        btn.click(),
-      ])
-      await waitStable(page, 1500)
-    }
+      await btn.waitFor({ state: 'visible', timeout: 20000 })
+
+      let lastError: unknown = null
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        await bringProjectPageToFront(page, { bypassLock: true })
+        try {
+          await btn.scrollIntoViewIfNeeded().catch(() => null)
+          await btn.click({ timeout: 8000 })
+          await Promise.race([
+            page.waitForURL(VEO3_PROJECT_URL_PATTERN, { timeout: 10000 }),
+            promptBar.waitFor({ state: 'visible', timeout: 10000 }),
+          ])
+          await waitStable(page, 1200)
+          return
+        } catch (e) {
+          lastError = e
+          // Fallback when Playwright reports "outside viewport" despite visible button.
+          await btn.evaluate((el: Element) => (el as HTMLElement).click()).catch(() => null)
+          await Promise.race([
+            page.waitForURL(VEO3_PROJECT_URL_PATTERN, { timeout: 6000 }),
+            promptBar.waitFor({ state: 'visible', timeout: 6000 }),
+          ]).catch(() => null)
+          if (VEO3_PROJECT_URL_PATTERN.test(page.url()) || (await promptBar.isVisible().catch(() => false))) {
+            await waitStable(page, 1000)
+            return
+          }
+          if (attempt < 3) {
+            stepLog(`[WARN] Step 1: "Dự án mới" attempt ${attempt} failed, retry…`)
+            await waitStable(page, 900)
+          }
+        }
+      }
+      throw lastError instanceof Error ? lastError : new Error(String(lastError ?? 'Step 1 failed'))
+    })
   )
   stepLog('Step 1: Done — on project page')
 }
@@ -690,7 +758,7 @@ export interface UploadLogEntry {
 }
 
 export async function flowUploadImages(page: Page, imagePaths: string[], mode: Veo3VideoMode = 'frames', opts: { leaveDialogOpen?: boolean } = {}): Promise<{ orderedNames: string[]; uploadLog: UploadLogEntry[] }> {
-  await bringProjectPageToFront(page)
+  await bringProjectPageToFront(page, { bypassLock: true })
   const valid = imagePaths.filter(p => p && fs.existsSync(p))
   if (valid.length === 0) throw new Error('No valid image paths')
 
@@ -1013,16 +1081,12 @@ export async function flowAddImageToPromptByMediaName(page: Page, mediaName: str
 
     // Fallback: any visible slot opener in prompt bar.
     // Slot can be empty ([aria-haspopup="dialog"]) or already occupied ([data-card-open]).
-    const promptBarSlots = page
-      .locator(
-        [
-          `${S.promptBar} [aria-haspopup="dialog"]`,
-          `${S.promptBar} [data-card-open]`,
-        ].join(', ')
-      )
-      .filter({
-        has: page.locator('img, span, div, i'),
-      })
+    const promptBarSlots = page.locator(
+      [
+        `${S.promptBar} [aria-haspopup="dialog"]`,
+        `${S.promptBar} [data-card-open]`,
+      ].join(', ')
+    )
     const count = await promptBarSlots.count().catch(() => 0)
     if (count === 0) {
       throw new Error(`No frame slot button found in prompt bar (slot=${slotIndex})`)
@@ -1109,48 +1173,6 @@ export async function flowAddImageToPromptByMediaName(page: Page, mediaName: str
     await waitStable(page, 600)
   }
 
-  const clearSlotIfOccupied = async (slotBtn: Locator): Promise<void> => {
-    const occupied = await slotBtn
-      .locator('img[src*="getMediaUrlRedirect"][src*="name="]')
-      .first()
-      .isVisible()
-      .catch(() => false)
-    if (!occupied) return
-
-    stepLog(`Step 4: Slot ${slotIndex + 1} already has image — clear before re-import`)
-    const clearedByJs = await slotBtn.evaluate((node: Element) => {
-      const hasImg = !!node.querySelector('img[src*="getMediaUrlRedirect"][src*="name="]')
-      if (!hasImg) return { occupied: false, cleared: false }
-      const icon = Array.from(node.querySelectorAll('i')).find((el) => /cancel/i.test((el.textContent || '').trim()))
-      if (!icon) return { occupied: true, cleared: false }
-      const target = (icon.closest('button') || icon.closest('div') || icon) as HTMLElement
-      ;['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'].forEach(type => {
-        target.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }))
-      })
-      return { occupied: true, cleared: true }
-    }).catch(() => ({ occupied: true, cleared: false }))
-
-    if (!clearedByJs.cleared) {
-      // Fallback click on common cancel affordances if JS dispatch path missed.
-      const cancelBtn = slotBtn
-        .locator(
-          [
-            'button:has(i:text-is("cancel"))',
-            'i:text-is("cancel")',
-            '[aria-label*="clear" i]',
-            '[aria-label*="remove" i]',
-            '[aria-label*="xóa" i]',
-            '[aria-label*="hủy" i]',
-          ].join(', ')
-        )
-        .first()
-      if (await cancelBtn.isVisible().catch(() => false)) {
-        await cancelBtn.click({ timeout: 3000 }).catch(() => null)
-      }
-    }
-    await waitStable(page, 350)
-  }
-
   stepLog(`Step 4: Add image ${slotIndex + 1} to prompt (image key=${mediaName.slice(0, 24)}…, frame-slot picker)…`)
   await page.keyboard.press('Escape')
   await waitStable(page, 350)
@@ -1161,20 +1183,26 @@ export async function flowAddImageToPromptByMediaName(page: Page, mediaName: str
   try {
     let lastErr: string | null = null
     for (let openAttempt = 1; openAttempt <= 1; openAttempt++) {
-      await bringProjectPageToFront(page)
-      await slotBtn.waitFor({ state: 'visible', timeout: 10000 })
+      const currentSlotBtn = openAttempt === 1 ? slotBtn : await resolveFrameSlotButton()
+      await bringProjectPageToFront(page, { bypassLock: true })
+      await currentSlotBtn.waitFor({ state: 'visible', timeout: 10000 })
       traceImportLog(`slot=${slotIndex} media=${mediaName} button visible (openAttempt=${openAttempt})`)
-      await clearSlotIfOccupied(slotBtn)
       try {
-        await slotBtn.click({ timeout: 6000 })
-      } catch {
-        const h = await slotBtn.elementHandle()
-        if (!h) throw new Error('slot button not interactable')
-        await h.evaluate((node: HTMLElement) => node.click())
+        await currentSlotBtn.click({ timeout: 6000 })
+      } catch (clickErr) {
+        await currentSlotBtn.click({ timeout: 2500, force: true }).catch(() => {
+          throw clickErr
+        })
       }
       await waitStable(page, 400)
       const dialog = page.locator('[role="dialog"]').first()
-      await dialog.waitFor({ state: 'visible', timeout: 8000 })
+      const opened = await dialog.waitFor({ state: 'visible', timeout: 8000 }).then(() => true).catch(() => false)
+      if (!opened) {
+        lastErr = `dialog-not-opened-attempt-${openAttempt}`
+        await page.keyboard.press('Escape').catch(() => {})
+        await waitStable(page, 250)
+        continue
+      }
       traceImportLog(`slot=${slotIndex} dialog opened (openAttempt=${openAttempt})`)
       await ensureContentUploadDialogSortNewest(page, dialog)
 
@@ -1303,34 +1331,9 @@ export async function flowAddImagesToPromptFromOrderedNames(
   }
 }
 
-/** 5. Paste prompt into the textbox and submit (clipboard + Ctrl+V for speed; fallback insertText). */
-export async function flowTypePromptAndSubmit(page: Page, prompt: string): Promise<void> {
-  const detectImmediateGeneration403 = async (): Promise<void> => {
-    const res = await page
-      .waitForResponse(
-        (r) => {
-          const url = r.url()
-          if (!/googleapis\.com\/v1\/video:/i.test(url)) return false
-          if (r.request().method() !== 'POST') return false
-          return /video:/i.test(url)
-        },
-        { timeout: 6000 }
-      )
-      .catch(() => null)
-    if (!res) return
-    if (res.status() !== 403) return
-    let bodySnippet = ''
-    try {
-      bodySnippet = (await res.text()).slice(0, 600)
-    } catch {
-      /* ignore body parse failures */
-    }
-    throw new Error(`VEO3_PROFILE_BLOCKED_403: submit request rejected (${res.url()}) ${bodySnippet}`)
-  }
-
+async function flowPreparePromptText(page: Page, prompt: string): Promise<void> {
   await withPromptInputBusy(page, async () => {
     await bringProjectPageToFront(page)
-    stepLog('Step 5: Paste prompt and submit…')
     const input = page.locator(S.promptInput).first()
     await withFlowAction(
       'Focus ô nhập prompt và xóa nội dung cũ',
@@ -1373,6 +1376,84 @@ export async function flowTypePromptAndSubmit(page: Page, prompt: string): Promi
         await waitStable(page, 300)
       }
     )
+  })
+}
+
+/** 5. Submit prompt (optional fill), verify prompt/image, then submit. */
+export async function flowTypePromptAndSubmit(
+  page: Page,
+  prompt: string,
+  opts: { expectImageInPrompt?: boolean; skipFill?: boolean } = {}
+): Promise<void> {
+  const detectImmediateGeneration403 = async (): Promise<void> => {
+    const res = await page
+      .waitForResponse(
+        (r) => {
+          const url = r.url()
+          if (!/googleapis\.com\/v1\/video:/i.test(url)) return false
+          if (r.request().method() !== 'POST') return false
+          return /video:/i.test(url)
+        },
+        { timeout: 6000 }
+      )
+      .catch(() => null)
+    if (!res) return
+    if (res.status() !== 403) return
+    let bodySnippet = ''
+    try {
+      bodySnippet = (await res.text()).slice(0, 600)
+    } catch {
+      /* ignore body parse failures */
+    }
+    throw new Error(`VEO3_PROFILE_BLOCKED_403: submit request rejected (${res.url()}) ${bodySnippet}`)
+  }
+
+  await withPromptInputBusy(page, async () => {
+    await bringProjectPageToFront(page)
+    stepLog('Step 5: Paste prompt and submit…')
+    const input = page.locator(S.promptInput).first()
+    const expectImageInPrompt = opts.expectImageInPrompt === true
+    const skipFill = opts.skipFill === true
+    const promptNeedle = prompt.trim().slice(0, Math.min(64, prompt.trim().length))
+
+    const hasPromptText = async (): Promise<boolean> => {
+      if (prompt.trim().length === 0) return true
+      const txt = await input
+        .evaluate((el) => ((el as HTMLElement).innerText || (el as HTMLElement).textContent || '').trim())
+        .catch(() => '')
+      if (txt.length === 0) return false
+      if (promptNeedle.length === 0) return txt.length > 0
+      return txt.includes(promptNeedle) || txt.length >= Math.max(20, Math.floor(prompt.length * 0.6))
+    }
+
+    const hasImageInPromptBar = async (): Promise<boolean> => {
+      const img = page
+        .locator(`${S.promptBar} img[src*="getMediaUrlRedirect"][src*="name="]`)
+        .first()
+      return await img.isVisible().catch(() => false)
+    }
+
+    if (!skipFill) {
+      await flowPreparePromptText(page, prompt)
+    }
+    let precheckOk = false
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      const promptOk = await hasPromptText()
+      const imageOk = !expectImageInPrompt || (await hasImageInPromptBar())
+      if (promptOk && imageOk) {
+        precheckOk = true
+        break
+      }
+      if (attempt === 1) {
+        stepLog(`[WARN] Step 5 pre-submit check failed (promptOk=${promptOk}, imageOk=${imageOk}) — retry once`)
+        if (!promptOk) await flowPreparePromptText(page, prompt)
+        await waitStable(page, 220)
+      }
+    }
+    if (!precheckOk) {
+      throw new Error('Step 5 pre-submit check failed: prompt or image missing before submit')
+    }
+
     await withFlowAction(
       'Bấm nút gửi / tạo (submit)',
       'Nút tạo video hoặc tạo trên Flow',
@@ -1686,7 +1767,7 @@ async function openEditPageInNewTabAndTriggerResolution(
     await editPage.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => null)
     await waitStable(editPage, 120)
 
-    await withFocusLock(async () => {
+    await withFocusLock(page, async () => {
       await bringProjectPageToFront(editPage, { bypassLock: true, skipDismiss: true })
       const downloadBtn = editPage.locator(S.editPageDownloadBtn).first()
       await downloadBtn.waitFor({ state: 'visible', timeout: 20000 })
@@ -2154,8 +2235,8 @@ export async function flowWaitAndDownloadAllGeneratedVideos1080pUsingParser(
       })
     if (hasWork) {
       const runWork = async (): Promise<{ downloadPromises: Promise<unknown>[]; successfulItems: Array<{ tileId: string; outputPath: string; outputFileName: string; workflowKey: string }> }> => {
-        if (isImageImportBusy(page)) {
-          stepLog('Image import is executing; defer download/retry actions this poll')
+        if (isImageImportBusy(page) || isPromptInputBusy(page)) {
+          stepLog('Image import/prompt typing is executing; defer download/retry actions this poll')
           return { downloadPromises: [], successfulItems: [] }
         }
         let pendingDownloadPromises: Promise<unknown>[] = []
@@ -2439,36 +2520,39 @@ export async function runVeo3CreateVideoFlow(
   imagePaths: string[] = [],
   opts: Veo3FlowOptions = {}
 ): Promise<{ uploadLog?: UploadLogEntry[] } | void> {
-  resetVeo3TraceLogs()
-  await installFlowUserInterferenceMonitor(page)
-  stepLog('——— Veo3 create-video flow start ———')
-  await flowClickNewProject(page)
-  await flowSetVideoMode(page, {
-    videoMode: opts.videoMode ?? 'frames',
-    landscape: opts.landscape ?? false,
-    multiplier: opts.multiplier ?? 2,
-    ...opts,
-  })
+  return await runWithFlowLogTag(opts.logTag, async () => {
+    resetVeo3TraceLogs()
+    await installFlowUserInterferenceMonitor(page)
+    stepLog('——— Veo3 create-video flow start ———')
+    await flowClickNewProject(page)
+    await flowSetVideoMode(page, {
+      videoMode: opts.videoMode ?? 'frames',
+      landscape: opts.landscape ?? false,
+      multiplier: opts.multiplier ?? 2,
+      ...opts,
+    })
 
-  if (imagePaths.length > 0) {
-    const { orderedNames, uploadLog } = await flowUploadImages(page, imagePaths, opts.videoMode ?? 'frames')
-    if (opts.debugUploadOnly) {
-      stepLog('——— Veo3 debug upload only: skipping add-to-prompt and submit ———')
-      return { uploadLog }
+    if (imagePaths.length > 0) {
+      const { orderedNames, uploadLog } = await flowUploadImages(page, imagePaths, opts.videoMode ?? 'frames')
+      if (opts.debugUploadOnly) {
+        stepLog('——— Veo3 debug upload only: skipping add-to-prompt and submit ———')
+        return { uploadLog }
+      }
+      await flowPreparePromptText(page, prompt)
+      const tiles = page.locator(S.uploadedTile).filter({ has: page.locator('img') })
+      const count = await tiles.count()
+      stepLog(`Adding ${Math.min(opts.videoMode === 'ingredients' ? 3 : 2, imagePaths.length, count)} image(s) to prompt${orderedNames.length > 0 ? ' (by upload order)' : ''}`)
+      await flowAddImagesToPrompt(page, opts.videoMode ?? 'frames', imagePaths, count, orderedNames)
+      await flowTypePromptAndSubmit(page, prompt, { expectImageInPrompt: true, skipFill: true })
+      stepLog('——— Veo3 create-video flow done ———')
+      return
+    } else if (opts.debugUploadOnly) {
+      return { uploadLog: [] }
     }
-    const tiles = page.locator(S.uploadedTile).filter({ has: page.locator('img') })
-    const count = await tiles.count()
-    stepLog(`Adding ${Math.min(opts.videoMode === 'ingredients' ? 3 : 2, imagePaths.length, count)} image(s) to prompt${orderedNames.length > 0 ? ' (by upload order)' : ''}`)
-    await flowAddImagesToPrompt(page, opts.videoMode ?? 'frames', imagePaths, count, orderedNames)
-    await flowTypePromptAndSubmit(page, prompt)
-    stepLog('——— Veo3 create-video flow done ———')
-    return
-  } else if (opts.debugUploadOnly) {
-    return { uploadLog: [] }
-  }
 
-  await flowTypePromptAndSubmit(page, prompt)
-  stepLog('——— Veo3 create-video flow done ———')
+    await flowTypePromptAndSubmit(page, prompt, { expectImageInPrompt: false })
+    stepLog('——— Veo3 create-video flow done ———')
+  })
 }
 
 const DELAY_BETWEEN_PROMPTS_MS = 20 * 1000
@@ -2477,6 +2561,29 @@ const DELAY_MAX_MS = 19 * 1000
 
 function randomDelayMs(minMs: number = DELAY_MIN_MS, maxMs: number = DELAY_MAX_MS): number {
   return Math.floor(minMs + Math.random() * (maxMs - minMs + 1))
+}
+
+const VEO3_QUEUE_STOPPED_BY_USER = 'VEO3_QUEUE_STOPPED_BY_USER'
+
+function assertNotStopped(shouldStop?: () => boolean): void {
+  if (shouldStop?.()) {
+    throw new Error(VEO3_QUEUE_STOPPED_BY_USER)
+  }
+}
+
+async function waitInterruptible(ms: number, shouldStop?: () => boolean): Promise<void> {
+  if (!shouldStop) {
+    await new Promise(resolve => setTimeout(resolve, ms))
+    return
+  }
+  const deadline = Date.now() + Math.max(0, ms)
+  while (Date.now() < deadline) {
+    assertNotStopped(shouldStop)
+    const slice = Math.min(300, Math.max(0, deadline - Date.now()))
+    if (slice <= 0) break
+    await new Promise(resolve => setTimeout(resolve, slice))
+  }
+  assertNotStopped(shouldStop)
 }
 
 export interface Veo3FlowGroup {
@@ -2489,87 +2596,95 @@ export interface Veo3FlowGroup {
 export async function runVeo3ProjectFlowByGroups(
   page: Page,
   groups: Veo3FlowGroup[],
-  opts: Veo3FlowOptions & { delayMinMs?: number; delayMaxMs?: number } = {},
+  opts: Veo3FlowOptions & { delayMinMs?: number; delayMaxMs?: number; shouldStop?: () => boolean } = {},
   downloadOpts?: { outputDir: string; expectedCount: number; timeoutMs?: number; onProgress?: (completedCount: number) => void; unordered?: boolean; downloadResolution?: Veo3DownloadResolution }
 ): Promise<string[]> {
-  resetVeo3TraceLogs()
-  await installFlowUserInterferenceMonitor(page)
-  const mode = opts.videoMode ?? 'frames'
-  const delayMinMs = opts.delayMinMs ?? DELAY_MIN_MS
-  const delayMaxMs = opts.delayMaxMs ?? DELAY_MAX_MS
-  stepLog('Veo3 project flow by groups: upload per group, random 15-19s between prompts')
-  await flowClickNewProject(page)
-  const isImage = opts.generationMode === 'image'
-  if (isImage) {
-    await flowSetImageMode(page, {
-      aspect: opts.landscape ? '16:9' : '9:16',
-      multiplier: (opts.multiplier ?? 1) as 1 | 2 | 3 | 4,
-      model: opts.imageModel ?? 'Nano Banana Pro',
-    })
-  } else {
-    await flowSetVideoMode(page, {
-      videoMode: mode,
-      landscape: opts.landscape ?? false,
-      multiplier: opts.multiplier ?? 2,
-      ...opts,
-    })
-  }
-
-  let downloadPromise: Promise<string[]> | null = null
-  if (downloadOpts) {
-    stepLog('Starting download tracker in parallel (non-blocking with submissions)')
-    downloadPromise = flowWaitAndDownloadAllGeneratedVideos1080pUsingParser(
-      page,
-      downloadOpts.outputDir,
-      downloadOpts.expectedCount,
-      {
-        timeoutMs: downloadOpts.timeoutMs,
-        onProgress: downloadOpts.onProgress,
-        unordered: downloadOpts.unordered,
-        downloadResolution: downloadOpts.downloadResolution ?? opts.downloadResolution ?? '1080p',
-      }
-    )
-  }
-
-  for (let g = 0; g < groups.length; g++) {
-    const group = groups[g]
-    const validPaths = group.imagePaths.filter(p => p && fs.existsSync(p))
-    if (validPaths.length > 0) {
-      stepLog(`Group ${g + 1}/${groups.length}: upload ${validPaths.length} image(s), then ${group.prompts.length} prompt(s)`)
-      await flowUploadImages(page, validPaths, mode, { leaveDialogOpen: true })
-      const localFileNames = validPaths.map(p => path.basename(p))
-      await waitStable(page, 800)
-      for (let p = 0; p < group.prompts.length; p++) {
-        stepLog(`  Prompt ${p + 1}/${group.prompts.length}: add images, type, submit`)
-        const twoSlots = false
-        const promptText = group.prompts[p]
-        await flowAddImagesToPromptFromOrderedNames(page, localFileNames, twoSlots)
-        await page.keyboard.press('Escape')
-        await waitStable(page)
-        await flowTypePromptAndSubmit(page, promptText)
-        if (p < group.prompts.length - 1) {
-          const waitMs = randomDelayMs(delayMinMs, delayMaxMs)
-          stepLog(`  Waiting ${waitMs / 1000}s before next prompt`)
-          await page.waitForTimeout(waitMs)
-        }
-      }
+  return await runWithFlowLogTag(opts.logTag, async () => {
+    resetVeo3TraceLogs()
+    await installFlowUserInterferenceMonitor(page)
+    const mode = opts.videoMode ?? 'frames'
+    const delayMinMs = opts.delayMinMs ?? DELAY_MIN_MS
+    const delayMaxMs = opts.delayMaxMs ?? DELAY_MAX_MS
+    const shouldStop = opts.shouldStop
+    stepLog('Veo3 project flow by groups: upload per group, random 15-19s between prompts')
+    assertNotStopped(shouldStop)
+    await flowClickNewProject(page)
+    const isImage = opts.generationMode === 'image'
+    if (isImage) {
+      await flowSetImageMode(page, {
+        aspect: opts.landscape ? '16:9' : '9:16',
+        multiplier: (opts.multiplier ?? 1) as 1 | 2 | 3 | 4,
+        model: opts.imageModel ?? 'Nano Banana Pro',
+      })
     } else {
-      stepLog(`Group ${g + 1}/${groups.length}: no images, run ${group.prompts.length} prompt(s) without images`)
-      for (let p = 0; p < group.prompts.length; p++) {
-        await flowTypePromptAndSubmit(page, group.prompts[p])
-        if (p < group.prompts.length - 1) {
-          const waitMs = randomDelayMs(delayMinMs, delayMaxMs)
-          await page.waitForTimeout(waitMs)
+      await flowSetVideoMode(page, {
+        videoMode: mode,
+        landscape: opts.landscape ?? false,
+        multiplier: opts.multiplier ?? 2,
+        ...opts,
+      })
+    }
+
+    let downloadPromise: Promise<string[]> | null = null
+    if (downloadOpts) {
+      stepLog('Starting download tracker in parallel (non-blocking with submissions)')
+      downloadPromise = flowWaitAndDownloadAllGeneratedVideos1080pUsingParser(
+        page,
+        downloadOpts.outputDir,
+        downloadOpts.expectedCount,
+        {
+          timeoutMs: downloadOpts.timeoutMs,
+          onProgress: downloadOpts.onProgress,
+          unordered: downloadOpts.unordered,
+          downloadResolution: downloadOpts.downloadResolution ?? opts.downloadResolution ?? '1080p',
+        }
+      )
+    }
+
+    for (let g = 0; g < groups.length; g++) {
+      assertNotStopped(shouldStop)
+      const group = groups[g]
+      const validPaths = group.imagePaths.filter(p => p && fs.existsSync(p))
+      if (validPaths.length > 0) {
+        stepLog(`Group ${g + 1}/${groups.length}: upload ${validPaths.length} image(s), then ${group.prompts.length} prompt(s)`)
+        await flowUploadImages(page, validPaths, mode, { leaveDialogOpen: true })
+        const localFileNames = validPaths.map(p => path.basename(p))
+        await waitStable(page, 800)
+        for (let p = 0; p < group.prompts.length; p++) {
+          assertNotStopped(shouldStop)
+          stepLog(`  Prompt ${p + 1}/${group.prompts.length}: add images, type, submit`)
+          const twoSlots = false
+          const promptText = group.prompts[p]
+          await flowPreparePromptText(page, promptText)
+          await flowAddImagesToPromptFromOrderedNames(page, localFileNames, twoSlots)
+          await page.keyboard.press('Escape')
+          await waitStable(page)
+          await flowTypePromptAndSubmit(page, promptText, { expectImageInPrompt: true, skipFill: true })
+          if (p < group.prompts.length - 1) {
+            const waitMs = randomDelayMs(delayMinMs, delayMaxMs)
+            stepLog(`  Waiting ${waitMs / 1000}s before next prompt`)
+            await waitInterruptible(waitMs, shouldStop)
+          }
+        }
+      } else {
+        stepLog(`Group ${g + 1}/${groups.length}: no images, run ${group.prompts.length} prompt(s) without images`)
+        for (let p = 0; p < group.prompts.length; p++) {
+          assertNotStopped(shouldStop)
+          await flowTypePromptAndSubmit(page, group.prompts[p], { expectImageInPrompt: false })
+          if (p < group.prompts.length - 1) {
+            const waitMs = randomDelayMs(delayMinMs, delayMaxMs)
+            await waitInterruptible(waitMs, shouldStop)
+          }
         }
       }
     }
-  }
-  stepLog('Veo3 project flow by groups done')
-  if (downloadPromise) {
-    stepLog('Waiting for download tracker to finish…')
-    return downloadPromise
-  }
-  return []
+    stepLog('Veo3 project flow by groups done')
+    if (downloadPromise) {
+      stepLog('Waiting for download tracker to finish…')
+      return downloadPromise
+    }
+    return []
+  })
 }
 
 /**
@@ -2582,47 +2697,50 @@ export async function runVeo3ProjectFlow(
   allImagePaths: string[],
   opts: Veo3FlowOptions & { delayBetweenPromptsMs?: number; scriptIndexPerJob?: number[] } = {}
 ): Promise<{ uploadLog?: UploadLogEntry[] } | void> {
-  resetVeo3TraceLogs()
-  await installFlowUserInterferenceMonitor(page)
-  const mode = opts.videoMode ?? 'frames'
-  const delayMs = opts.delayBetweenPromptsMs ?? DELAY_BETWEEN_PROMPTS_MS
-  const scriptIndexPerJob = opts.scriptIndexPerJob
-  stepLog('——— Veo3 project flow (one project, all images once) ———')
-  await flowClickNewProject(page)
-  await flowSetVideoMode(page, {
-    videoMode: mode,
-    landscape: opts.landscape ?? false,
-    multiplier: opts.multiplier ?? 2,
-    ...opts,
-  })
+  return await runWithFlowLogTag(opts.logTag, async () => {
+    resetVeo3TraceLogs()
+    await installFlowUserInterferenceMonitor(page)
+    const mode = opts.videoMode ?? 'frames'
+    const delayMs = opts.delayBetweenPromptsMs ?? DELAY_BETWEEN_PROMPTS_MS
+    const scriptIndexPerJob = opts.scriptIndexPerJob
+    stepLog('——— Veo3 project flow (one project, all images once) ———')
+    await flowClickNewProject(page)
+    await flowSetVideoMode(page, {
+      videoMode: mode,
+      landscape: opts.landscape ?? false,
+      multiplier: opts.multiplier ?? 2,
+      ...opts,
+    })
 
-  if (allImagePaths.length === 0) {
+    if (allImagePaths.length === 0) {
+      for (let i = 0; i < prompts.length; i++) {
+        await flowTypePromptAndSubmit(page, prompts[i], { expectImageInPrompt: false })
+        if (i < prompts.length - 1) await page.waitForTimeout(delayMs)
+      }
+      stepLog('——— Veo3 project flow done ———')
+      return
+    }
+
+    const { orderedNames, uploadLog } = await flowUploadImages(page, allImagePaths, mode)
+    if (opts.debugUploadOnly) {
+      stepLog('——— Veo3 debug upload only ———')
+      return { uploadLog }
+    }
+
     for (let i = 0; i < prompts.length; i++) {
-      await flowTypePromptAndSubmit(page, prompts[i])
-      if (i < prompts.length - 1) await page.waitForTimeout(delayMs)
+      stepLog(`Job ${i + 1}/${prompts.length}: add images, type prompt, submit`)
+      await flowPreparePromptText(page, prompts[i])
+      if (scriptIndexPerJob != null && scriptIndexPerJob[i] !== undefined) {
+        await flowAddImagesToPromptForScriptJob(page, orderedNames, scriptIndexPerJob[i])
+      } else {
+        await flowAddImagesToPromptForJob(page, mode, orderedNames, i)
+      }
+      await flowTypePromptAndSubmit(page, prompts[i], { expectImageInPrompt: true, skipFill: true })
+      if (i < prompts.length - 1) {
+        stepLog(`Waiting ${delayMs / 1000}s before next prompt…`)
+        await page.waitForTimeout(delayMs)
+      }
     }
     stepLog('——— Veo3 project flow done ———')
-    return
-  }
-
-  const { orderedNames, uploadLog } = await flowUploadImages(page, allImagePaths, mode)
-  if (opts.debugUploadOnly) {
-    stepLog('——— Veo3 debug upload only ———')
-    return { uploadLog }
-  }
-
-  for (let i = 0; i < prompts.length; i++) {
-    stepLog(`Job ${i + 1}/${prompts.length}: add images, type prompt, submit`)
-    if (scriptIndexPerJob != null && scriptIndexPerJob[i] !== undefined) {
-      await flowAddImagesToPromptForScriptJob(page, orderedNames, scriptIndexPerJob[i])
-    } else {
-      await flowAddImagesToPromptForJob(page, mode, orderedNames, i)
-    }
-    await flowTypePromptAndSubmit(page, prompts[i])
-    if (i < prompts.length - 1) {
-      stepLog(`Waiting ${delayMs / 1000}s before next prompt…`)
-      await page.waitForTimeout(delayMs)
-    }
-  }
-  stepLog('——— Veo3 project flow done ———')
+  })
 }

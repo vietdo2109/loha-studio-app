@@ -15,9 +15,11 @@ import { runFlowA } from './grok/flowA'
 import { runFlowB, runFlowC } from './grok/flowBC'
 import { setupNetworkIntercept } from './grok/network'
 import { waitForGeneration, upscaleVideo, downloadMedia } from './grok/waitAndDownload'
+import { SELECTORS } from './selectors'
 
 const DOM_STABLE_MS = 1000
 const GROK_URL = 'https://grok.com/imagine'
+const S = SELECTORS
 
 export class BrowserWorker {
   private ctx:              BrowserContext
@@ -35,7 +37,7 @@ export class BrowserWorker {
     this.onLog     = opts?.onLog
   }
 
-  async run(job: GrokJob, outputPath: string): Promise<JobResult> {
+  async run(job: GrokJob, outputPath: string): Promise<JobResult & { deferred?: boolean; finalize?: Promise<void> }> {
     this.log('info', `[${job.id}] "${job.title}" mode:${job.mode}`)
     this.capturedMediaUrl = null
     this.upscaledMediaUrl = null
@@ -55,10 +57,13 @@ export class BrowserWorker {
           // Reload trước mỗi job để thanh prompt / preview ảnh không dùng chung DOM state (nhiều profile song song)
           await this.page.reload({ waitUntil: 'domcontentloaded' })
         }
-        await this.page.waitForLoadState('networkidle', { timeout: 30000 }).catch(() => {
-          this.log('warn', 'waitForLoadState networkidle timeout, tiep tuc voi trang thai hien tai')
+        await Promise.race([
+          this.page.waitForSelector(S.prompt.input, { timeout: 8000 }),
+          this.page.waitForSelector(S.inlinePromptBar.generationModeGroup, { timeout: 8000 }),
+        ]).catch(() => {
+          this.log('warn', 'Homepage chua on dinh theo selector, van tiep tuc flow')
         })
-        await this.page.waitForTimeout(600)
+        await this.page.waitForTimeout(120)
       } catch (e) {
         this.log('warn', `Tai trang imagine: ${e}`)
       }
@@ -87,7 +92,6 @@ export class BrowserWorker {
 
       this.emit('progress', { jobId: job.id, step: 'Dang tai file ve...', percent: 90 })
       await downloadMedia(ctx, needUpscale, outputPath)
-
       this.emit('progress', { jobId: job.id, step: 'Hoan thanh!', percent: 100 })
       this.emit('completed', { jobId: job.id, filePath: outputPath })
       this.log('info', `Done -> ${outputPath}`)

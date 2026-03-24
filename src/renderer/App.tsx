@@ -423,6 +423,11 @@ export default function App() {
       setSessionSummary(payload.summary)
       const api = (window as any).electronAPI
       api?.logToFile?.({ level: payload.summary.failed > 0 ? 'warn' : 'info', message: `Session done: ${payload.summary.success}/${payload.summary.total} success, ${payload.summary.failed} failed`, source: 'renderer' })
+      const stoppedWithoutFailures = !payload.success && payload.summary.failed === 0
+      if (stoppedWithoutFailures) {
+        setErrors(prev => [...prev, 'Phiên Veo3 đã dừng theo yêu cầu.'])
+        return
+      }
       if (!payload.success || payload.summary.failed > 0) {
         setErrors(prev => [...prev, `Phiên kết thúc: ${payload.summary.failed}/${payload.summary.total} job lỗi.`])
       }
@@ -701,6 +706,20 @@ export default function App() {
       setIsStartingVeo3(false)
     }
   }, [veo3Queue, veo3ProfilesList, allowVeo])
+
+  const handleVeo3Stop = useCallback(async () => {
+    const api = (window as any).electronAPI
+    if (!api?.veo3StopQueue) {
+      setErrors(prev => [...prev, 'veo3StopQueue không khả dụng.'])
+      return
+    }
+    const res = await api.veo3StopQueue()
+    if (!res?.success) {
+      setErrors(prev => [...prev, res?.error ?? 'Không gửi được lệnh dừng queue Veo3.'])
+      return
+    }
+    setErrors(prev => [...prev, 'Đã gửi lệnh dừng Veo3 queue. Chờ bước hiện tại kết thúc để chạy lại.'])
+  }, [])
 
   const handleActivate = useCallback(async () => {
     const api = (window as any).electronAPI
@@ -1294,6 +1313,17 @@ export default function App() {
               >
                 {isStartingVeo3 ? <><Icon.Spin /> Đang chạy...</> : <><Icon.Play /> Start</>}
               </Btn>
+              {isStartingVeo3 && (
+                <Btn
+                  variant="danger"
+                  onClick={handleVeo3Stop}
+                  size="lg"
+                  style={{ minWidth: 92 }}
+                  title="Dừng toàn bộ queue Veo3 đang chạy"
+                >
+                  Stop
+                </Btn>
+              )}
             </>
           )}
           {platform === "Grok" && activePanel === "projects" && (

@@ -58,6 +58,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   veo3OpenProfiles: (count: number) => ipcRenderer.invoke('veo3-open-profiles', count),
   veo3OpenSelectedProfiles: (profileIds: string[]) => ipcRenderer.invoke('veo3-open-selected-profiles', profileIds),
   veo3CloseAll: () => ipcRenderer.invoke('veo3-close-all'),
+  veo3DeleteProfile: (profileId: string) => ipcRenderer.invoke('veo3-delete-profile', profileId),
+  veo3StopQueue: () => ipcRenderer.invoke('veo3-stop-queue'),
   veo3RunJob: (payload: { projectId?: string; jobId?: string; jobIndex?: number; debugUploadOnly?: boolean; prompt: string; imageDir: string; aiModel?: 'veo-3.1-fast' | 'veo-3.1-fast-lower-priority' | 'veo-3.1-quality'; videoMode: 'frames' | 'ingredients'; landscape: boolean; multiplier: 1 | 2 | 3 | 4 }) =>
     ipcRenderer.invoke('veo3-run-job', payload),
   veo3RunQueue: (queue: any[]) => ipcRenderer.invoke('veo3-run-queue', queue),

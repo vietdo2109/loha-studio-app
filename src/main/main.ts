@@ -24,9 +24,10 @@ import { app, BrowserWindow, ipcMain, dialog } from 'electron'
 import path from 'path'
 import * as fs from 'fs'
 import os from 'os'
+import { spawn, type ChildProcess } from 'child_process'
 import { machineIdSync } from 'node-machine-id'
 import { autoUpdater } from 'electron-updater'
-import { chromium, BrowserContext, Page } from 'patchright'
+import { chromium, Browser, BrowserContext, Page } from 'patchright'
 import { BrowserWorker } from '../automation/BrowserWorker'
 import { parseCredentialsFile } from '../automation/AccountLogin'
 import { resolveImageForIndex, resolveImagesForIndex, resolveAllImagePathsFromDir, listImagePathsFromDir } from '../automation/inputParser'
@@ -906,6 +907,16 @@ ipcMain.handle('stop-session', () => {
   sessionAborted = true
 })
 
+let veo3QueueAbortRequested = false
+let veo3QueueRunning = false
+
+ipcMain.handle('veo3-stop-queue', () => {
+  if (!veo3QueueRunning) return { success: true, running: false }
+  veo3QueueAbortRequested = true
+  appLog('warn', 'Veo3 queue: stop requested by user', 'main')
+  return { success: true, running: true }
+})
+
 // ─── IPC: Run queue (profiles must already be open) ───────────────────────────
 
 interface FlatJob {
@@ -1078,7 +1089,6 @@ async function runWorkerLoop(
       // Build GrokJob từ flat job
       const grokJob = buildGrokJob(job, outputPath)
       await worker.run(grokJob, outputPath)
-
       send('job-completed', { projectId: job.projectId, jobId: job.jobId, outputPath })
       cb.onSuccess()
 
@@ -1180,7 +1190,9 @@ app.on('before-quit', async () => {
     v.ctx?.close().catch(() => {})
   }
   for (const v of veo3Profiles) {
+    v.browser?.close().catch(() => {})
     v.ctx?.close().catch(() => {})
+    stopOwnedChromeProcess(v.chromeProcess)
   }
 })
 
@@ -1195,29 +1207,130 @@ const VEO3_FLOW_LANDING_URL = 'https://labs.google/fx/vi/tools/flow#pricing'
 const VEO3_STATUS_FILE = 'status.json'
 const VEO3_POLL_INTERVAL_MS = 6000
 const VEO3_FIRST_POLL_DELAY_MS = 5000
+const VEO3_CDP_PORT_BASE = Number(process.env.VEO3_CDP_PORT_BASE || '19220')
+const VEO3_CDP_BOOT_TIMEOUT_MS = 30000
 
 const VEO3_LOGGED_IN_SELECTORS = [
   '.sc-c8eefe6-0.dqnnrd .sc-c8eefe6-8.cHonUi',
   'img[src*="googleusercontent.com"]',
   'img[alt*="hồ sơ"]',
   'img[alt*="profile" i]',
+  // Fallback "ready" signals on Flow project page.
+  '#__next [role="textbox"][data-slate-editor="true"]',
+  'button:has(i:text-is("add_2"))',
 ]
 
 interface Veo3ProfileEntry {
   profileId: string
   profileDir: string
+  browser?: Browser
   ctx?: BrowserContext
   page?: Page
+  chromeProcess?: ChildProcess
+  debugPort?: number
   loggedIn?: boolean
 }
 
 let veo3Profiles: Veo3ProfileEntry[] = []
 
+function parseProfileOrdinal(profileId: string): number {
+  const m = profileId.match(/^profile-(\d{3})$/)
+  if (!m) return 1
+  const n = Number(m[1])
+  return Number.isFinite(n) && n > 0 ? n : 1
+}
+
+function resolveChromeExecutablePath(): string {
+  if (process.env.CHROME_PATH && fs.existsSync(process.env.CHROME_PATH)) {
+    return process.env.CHROME_PATH
+  }
+  const candidates =
+    process.platform === 'win32'
+      ? [
+          'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+          'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+        ]
+      : process.platform === 'darwin'
+        ? ['/Applications/Google Chrome.app/Contents/MacOS/Google Chrome']
+        : ['/usr/bin/google-chrome', '/usr/bin/google-chrome-stable', '/snap/bin/chromium']
+  const hit = candidates.find(p => fs.existsSync(p))
+  if (!hit) throw new Error('Không tìm thấy Chrome thường. Cài Google Chrome hoặc set CHROME_PATH.')
+  return hit
+}
+
+async function waitForChromeCdpReady(port: number, timeoutMs: number = VEO3_CDP_BOOT_TIMEOUT_MS): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  const endpoint = `http://127.0.0.1:${port}/json/version`
+  while (Date.now() < deadline) {
+    try {
+      const res = await fetch(endpoint)
+      if (res.ok) {
+        const j = await res.json() as { webSocketDebuggerUrl?: string }
+        if (typeof j.webSocketDebuggerUrl === 'string' && j.webSocketDebuggerUrl.length > 0) return
+      }
+    } catch {
+      // keep polling until timeout
+    }
+    await new Promise(r => setTimeout(r, 250))
+  }
+  throw new Error(`Chrome CDP không sẵn sàng trên port ${port}`)
+}
+
+function stopOwnedChromeProcess(proc: ChildProcess | undefined): void {
+  if (!proc || proc.killed) return
+  try {
+    proc.kill()
+  } catch {
+    // ignore
+  }
+}
+
+async function openVeo3ProfileViaChromeCdp(profileId: string, profileDir: string): Promise<{
+  browser: Browser
+  ctx: BrowserContext
+  page: Page
+  chromeProcess: ChildProcess
+  debugPort: number
+}> {
+  const chromePath = resolveChromeExecutablePath()
+  const debugPort = VEO3_CDP_PORT_BASE + parseProfileOrdinal(profileId)
+  const chromeArgs = [
+    `--remote-debugging-port=${debugPort}`,
+    `--user-data-dir=${profileDir}`,
+    '--no-first-run',
+    '--no-default-browser-check',
+    '--disable-default-apps',
+    '--disable-features=Translate,OptimizationHints',
+    '--new-window',
+    VEO3_FLOW_LANDING_URL,
+  ]
+  const chromeProcess = spawn(chromePath, chromeArgs, {
+    windowsHide: false,
+    stdio: 'ignore',
+  })
+  try {
+    await waitForChromeCdpReady(debugPort)
+    const browser = await chromium.connectOverCDP(`http://127.0.0.1:${debugPort}`)
+    const ctx = browser.contexts()[0]
+    if (!ctx) throw new Error('CDP connected nhưng không lấy được browser context')
+    const page = ctx.pages()[0] ?? await ctx.newPage()
+    if (!/labs\.google\/fx\/vi\/tools\/flow/i.test(page.url())) {
+      await page.goto(VEO3_FLOW_LANDING_URL, { waitUntil: 'domcontentloaded' })
+    }
+    return { browser, ctx, page, chromeProcess, debugPort }
+  } catch (err) {
+    stopOwnedChromeProcess(chromeProcess)
+    throw err
+  }
+}
+
 /** Remove a Veo3 profile from the in-memory list and notify renderer (e.g. after user closed the browser). */
 function removeVeo3Entry(profileId: string): void {
   const idx = veo3Profiles.findIndex(v => v.profileId === profileId)
   if (idx >= 0) {
-    const profileDir = veo3Profiles[idx].profileDir
+    const entry = veo3Profiles[idx]
+    const profileDir = entry.profileDir
+    stopOwnedChromeProcess(entry.chromeProcess)
     veo3Profiles.splice(idx, 1)
     writeVeo3Status(profileDir, false)
     send('veo3-profile-status', { profileId, loggedIn: false })
@@ -1306,7 +1419,14 @@ ipcMain.handle('veo3-list-profiles', async () => {
     const profileDir = path.join(VEO3_PROFILES_DIR, d.name)
     const profileId = d.name
     const status = readVeo3Status(profileDir)
-    return { profileId, profileDir, loggedIn: status?.loggedIn ?? false, email: status?.email }
+    const runtime = veo3Profiles.find(v => v.profileId === profileId)
+    let runtimeReady = false
+    try {
+      runtimeReady = !!(runtime?.loggedIn && runtime.page && !runtime.page.isClosed())
+    } catch {
+      runtimeReady = false
+    }
+    return { profileId, profileDir, loggedIn: runtimeReady, email: status?.email }
   })
   return { profiles }
 })
@@ -1328,6 +1448,24 @@ async function isVeo3PageLoggedIn(page: Page): Promise<boolean> {
   return false
 }
 
+async function isVeo3ProfileReallyReady(page: Page): Promise<boolean> {
+  try {
+    if (page.isClosed()) return false
+    const currentUrl = page.url()
+    if (!/labs\.google\/fx\/vi\/tools\/flow/i.test(currentUrl)) {
+      await page.goto(VEO3_FLOW_URL, { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => null)
+      await page.waitForTimeout(400).catch(() => null)
+    }
+    const ok = await isVeo3PageLoggedIn(page)
+    if (ok) return true
+    // One more short recheck to avoid false negatives when page just switched/state still painting.
+    await page.waitForTimeout(700).catch(() => null)
+    return await isVeo3PageLoggedIn(page)
+  } catch {
+    return false
+  }
+}
+
 async function tryGetEmailFromFlowPage(page: Page): Promise<string | undefined> {
   try {
     const email = await page.evaluate(() => {
@@ -1343,13 +1481,12 @@ async function tryGetEmailFromFlowPage(page: Page): Promise<string | undefined> 
 
 async function pollVeo3LoginState(profileId: string, profileDir: string, page: Page | null): Promise<void> {
   if (!page) {
+    writeVeo3Status(profileDir, false)
     send('veo3-profile-status', { profileId, loggedIn: false })
     return
   }
   try {
-    const stillOpen = await page.evaluate(() => !document.hidden).catch(() => false)
-    if (!stillOpen) return
-    const loggedIn = await isVeo3PageLoggedIn(page)
+    const loggedIn = await isVeo3ProfileReallyReady(page)
     const entry = veo3Profiles.find(v => v.profileId === profileId)
     if (entry) entry.loggedIn = loggedIn
     if (loggedIn) {
@@ -1363,6 +1500,7 @@ async function pollVeo3LoginState(profileId: string, profileDir: string, page: P
   } catch {
     const entry = veo3Profiles.find(v => v.profileId === profileId)
     if (entry) entry.loggedIn = false
+    writeVeo3Status(profileDir, false)
     send('veo3-profile-status', { profileId, loggedIn: false })
   }
 }
@@ -1382,20 +1520,13 @@ ipcMain.handle('veo3-open-profiles', async (_event, count: number) => {
     }
     fs.mkdirSync(profileDir, { recursive: true })
     try {
-      const ctx = await chromium.launchPersistentContext(profileDir, {
-        channel:  'chrome',
-        headless: false,
-        acceptDownloads: true,
-        viewport: { width: 1366, height: 768 },
-        args:     ['--no-sandbox'],
-      })
-      const page = await ctx.newPage()
-      await page.goto(VEO3_FLOW_LANDING_URL, { waitUntil: 'domcontentloaded' })
-      const status = readVeo3Status(profileDir)
-      const entry: Veo3ProfileEntry = { profileId, profileDir, ctx, page, loggedIn: status?.loggedIn ?? false }
+      const { browser, ctx, page, chromeProcess, debugPort } = await openVeo3ProfileViaChromeCdp(profileId, profileDir)
+      const entry: Veo3ProfileEntry = { profileId, profileDir, browser, ctx, page, chromeProcess, debugPort, loggedIn: false }
       veo3Profiles.push(entry)
       ctx.on('close', () => removeVeo3Entry(profileId))
-      send('veo3-profile-status', { profileId, loggedIn: status?.loggedIn ?? false, email: status?.email })
+      browser.on('disconnected', () => removeVeo3Entry(profileId))
+      writeVeo3Status(profileDir, false)
+      send('veo3-profile-status', { profileId, loggedIn: false })
       const poll = () => pollVeo3LoginState(profileId, profileDir, entry.page ?? null)
       setTimeout(poll, VEO3_FIRST_POLL_DELAY_MS)
       setInterval(poll, VEO3_POLL_INTERVAL_MS)
@@ -1420,21 +1551,14 @@ ipcMain.handle('veo3-open-selected-profiles', async (_event, profileIds: string[
     if (veo3Profiles.some(v => v.profileId === profileId && v.ctx)) continue
     fs.mkdirSync(profileDir, { recursive: true })
     try {
-      const ctx = await chromium.launchPersistentContext(profileDir, {
-        channel:  'chrome',
-        headless: false,
-        acceptDownloads: true,
-        viewport: { width: 1366, height: 768 },
-        args:     ['--no-sandbox'],
-      })
-      const page = await ctx.newPage()
-      await page.goto(VEO3_FLOW_LANDING_URL, { waitUntil: 'domcontentloaded' })
-      const status = readVeo3Status(profileDir)
-      const entry: Veo3ProfileEntry = { profileId, profileDir, ctx, page, loggedIn: status?.loggedIn ?? false }
+      const { browser, ctx, page, chromeProcess, debugPort } = await openVeo3ProfileViaChromeCdp(profileId, profileDir)
+      const entry: Veo3ProfileEntry = { profileId, profileDir, browser, ctx, page, chromeProcess, debugPort, loggedIn: false }
       veo3Profiles.push(entry)
       ctx.on('close', () => removeVeo3Entry(profileId))
+      browser.on('disconnected', () => removeVeo3Entry(profileId))
       opened += 1
-      send('veo3-profile-status', { profileId, loggedIn: status?.loggedIn ?? false, email: status?.email })
+      writeVeo3Status(profileDir, false)
+      send('veo3-profile-status', { profileId, loggedIn: false })
       const poll = () => pollVeo3LoginState(profileId, profileDir, entry.page ?? null)
       setTimeout(poll, VEO3_FIRST_POLL_DELAY_MS)
       setInterval(poll, VEO3_POLL_INTERVAL_MS)
@@ -1448,9 +1572,37 @@ ipcMain.handle('veo3-open-selected-profiles', async (_event, profileIds: string[
 
 ipcMain.handle('veo3-close-all', async () => {
   for (const v of veo3Profiles) {
+    v.browser?.close().catch(() => {})
     v.ctx?.close().catch(() => {})
+    stopOwnedChromeProcess(v.chromeProcess)
   }
   veo3Profiles = []
+})
+
+ipcMain.handle('veo3-delete-profile', async (_event, profileId: string) => {
+  const gate = requireLicenseFeature('veo', 'veo3-delete-profile')
+  if (!gate.ok) return { success: false, error: gate.error }
+  if (!/^profile-\d{3}$/.test(profileId)) return { success: false, error: 'Profile không hợp lệ.' }
+  if (veo3QueueRunning) return { success: false, error: 'Queue Veo3 đang chạy. Hãy dừng queue trước khi xóa profile.' }
+
+  const profileDir = getVeo3ProfileDirById(profileId)
+  const entry = veo3Profiles.find(v => v.profileId === profileId)
+  if (entry) {
+    await entry.browser?.close().catch(() => {})
+    await entry.ctx?.close().catch(() => {})
+    stopOwnedChromeProcess(entry.chromeProcess)
+    removeVeo3Entry(profileId)
+  }
+
+  try {
+    if (fs.existsSync(profileDir)) fs.rmSync(profileDir, { recursive: true, force: true })
+    send('veo3-profile-status', { profileId, loggedIn: false })
+    appLog('info', `Deleted Veo3 profile: ${profileId}`, 'main')
+    return { success: true }
+  } catch (err: any) {
+    appLog('error', `Delete Veo3 profile ${profileId}: ${err?.message ?? String(err)}`, 'main')
+    return { success: false, error: err?.message ?? 'Không xóa được profile.' }
+  }
 })
 
 /** Run one Veo3 job: uses first *logged-in* profile's Flow page; navigates to project list then runs create-video flow. */
@@ -1506,6 +1658,7 @@ ipcMain.handle('veo3-run-job', async (_event, payload: {
       send('job-progress', { projectId, jobId, progress: 10 })
     }
     const result = await runVeo3CreateVideoFlow(entry.page, prompt, imagePaths, {
+      logTag: `${entry.profileId}|${(projectId ?? jobId ?? 'single').slice(0, 8)}`,
       aiModel,
       videoMode,
       landscape,
@@ -1588,26 +1741,57 @@ ipcMain.handle('veo3-run-queue', async (_event,   queue: Array<{
   generationMode?: 'video' | 'image'
   imageModel?: string
 }>) => {
+  if (veo3QueueRunning) {
+    return { success: false, error: 'Veo3 queue đang chạy. Dừng phiên hiện tại trước khi chạy lại.' }
+  }
   const gate = requireLicenseFeature('veo', 'veo3-run-queue')
   if (!gate.ok) return { success: false, error: gate.error }
 
+  veo3QueueAbortRequested = false
+  veo3QueueRunning = true
+  try {
   pruneClosedVeo3Profiles()
-  const profiles = veo3Profiles.filter(v => v.page && v.loggedIn)
-  if (profiles.length === 0) return { success: false, error: 'Không có profile Veo3 nào đang mở và đã đăng nhập.' }
+  const profiles: Array<{ page: Page; profileId: string }> = []
+  for (const v of veo3Profiles) {
+    if (veo3QueueAbortRequested) break
+    if (!v.page) continue
+    let ready = await isVeo3ProfileReallyReady(v.page)
+    if (!ready) {
+      // Second chance before excluding this profile from run distribution.
+      await v.page.goto(VEO3_FLOW_URL, { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => null)
+      await v.page.waitForTimeout(600).catch(() => null)
+      ready = await isVeo3ProfileReallyReady(v.page)
+    }
+    v.loggedIn = ready
+    if (ready) {
+      const email = await tryGetEmailFromFlowPage(v.page).catch(() => undefined)
+      send('veo3-profile-status', { profileId: v.profileId, loggedIn: true, ...(email ? { email } : {}) })
+      profiles.push({ page: v.page, profileId: v.profileId })
+    } else {
+      send('veo3-profile-status', { profileId: v.profileId, loggedIn: false })
+    }
+  }
+  if (profiles.length === 0) {
+    veo3QueueRunning = false
+    return { success: false, error: 'Không có profile Veo3 nào đang mở và đã đăng nhập.' }
+  }
   const projectsWithPending = queue
     .map(q => ({
       ...q,
       pendingJobs: q.jobs.filter((j: { status: string }) => j.status === 'pending').sort((a: { index: number }, b: { index: number }) => a.index - b.index),
     }))
     .filter(q => q.pendingJobs.length > 0)
-  if (projectsWithPending.length === 0) return { success: false, error: 'Queue trống hoặc không có job đang chờ.' }
+  if (projectsWithPending.length === 0) {
+    veo3QueueRunning = false
+    return { success: false, error: 'Queue trống hoặc không có job đang chờ.' }
+  }
   const projectQueue: typeof projectsWithPending = [...projectsWithPending]
-  const delay = (ms: number) => new Promise(r => setTimeout(r, ms))
 
   async function runProjectOnEntry(
     entry: { page: any; profileId: string },
     project: typeof projectsWithPending[0]
-  ): Promise<{ success: boolean; profileBlocked?: boolean }> {
+  ): Promise<{ success: boolean; profileBlocked?: boolean; stopped?: boolean }> {
+    if (veo3QueueAbortRequested) return { success: false, stopped: true }
     const prompts = project.pendingJobs.map((j: { prompt: string }) => j.prompt)
     const startDir = project.startFramesDir || project.imageDir || ''
     const endDir = project.endFramesDir || ''
@@ -1690,6 +1874,8 @@ ipcMain.handle('veo3-run-queue', async (_event,   queue: Array<{
       const expectedCount = project.pendingJobs.length * Math.max(1, project.multiplier ?? 2)
       const outputDirForProject = path.join(project.outputDir, project.name.replace(/\s+/g, '_').toLowerCase())
       const savedPaths = await runVeo3ProjectFlowByGroups(entry.page, groups, {
+        logTag: `${entry.profileId}|${project.id.slice(0, 8)}`,
+        shouldStop: () => veo3QueueAbortRequested,
         aiModel: project.aiModel,
         videoMode: project.videoMode,
         landscape: project.landscape,
@@ -1717,6 +1903,10 @@ ipcMain.handle('veo3-run-queue', async (_event,   queue: Array<{
       return { success: true }
     } catch (err: any) {
       const msg = err?.message ?? String(err)
+      if (/VEO3_QUEUE_STOPPED_BY_USER/i.test(msg)) {
+        appLog('warn', `Veo3 queue project stopped by user: ${project.name} (${entry.profileId})`, 'main')
+        return { success: false, stopped: true }
+      }
       const { user, tech } = humanizePlaywrightError(err)
       const profileBlocked = /VEO3_PROFILE_BLOCKED_403|forbidden|recaptcha|bot detect|policy/i.test(msg)
       if (/target page, context or browser has been closed|page.*closed|context.*closed/i.test(msg)) removeVeo3Entry(entry.profileId)
@@ -1760,17 +1950,37 @@ ipcMain.handle('veo3-run-queue', async (_event,   queue: Array<{
   }
 
   appLog('info', `Veo3 queue: ${projectQueue.length} project(s), ${profiles.length} profile(s) — one project per profile, all images uploaded once, 30s between prompts`, 'main')
+  let stoppedByUser = false
   await Promise.all(
     profiles.map(async (ent) => {
       if (!ent.page) return
       const entry = { page: ent.page, profileId: ent.profileId }
       while (projectQueue.length > 0) {
+        if (veo3QueueAbortRequested) {
+          stoppedByUser = true
+          break
+        }
         const project = projectQueue.shift()!
         const result = await runProjectOnEntry(entry, project)
+        if (result.stopped) {
+          stoppedByUser = true
+          break
+        }
         if (result.profileBlocked) break
       }
     })
   )
-  send('session-done', { success: true, summary: { total: projectsWithPending.reduce((s, p) => s + p.pendingJobs.length, 0), success: 0, failed: 0 } })
+  const totalJobs = projectsWithPending.reduce((s, p) => s + p.pendingJobs.length, 0)
+  if (stoppedByUser || veo3QueueAbortRequested) {
+    send('session-done', { success: false, summary: { total: totalJobs, success: 0, failed: 0 } })
+    veo3QueueAbortRequested = false
+    veo3QueueRunning = false
+    return { success: true, stopped: true }
+  }
+  send('session-done', { success: true, summary: { total: totalJobs, success: 0, failed: 0 } })
+  veo3QueueRunning = false
   return { success: true }
+  } finally {
+    veo3QueueRunning = false
+  }
 })
