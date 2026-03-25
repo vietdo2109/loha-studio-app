@@ -1220,6 +1220,106 @@ const VEO3_LOGGED_IN_SELECTORS = [
   'button:has(i:text-is("add_2"))',
 ]
 
+/** Do not navigate the tab while the user is on Google sign-in / OAuth — that aborts login and bounces back to pricing. */
+function isOAuthOrGoogleSignInUrl(url: string): boolean {
+  const u = url.toLowerCase()
+  return (
+    /accounts\.google\./i.test(u)
+    || /\/signin\//i.test(u)
+    || /google\.com\/(o\/|ServiceLogin|InteractiveLogin)/i.test(u)
+    || /\/oauth/i.test(u)
+    || /login\.google/i.test(u)
+  )
+}
+
+/**
+ * Prefer any Flow tab that shows logged-in UI (user may log in on a new tab while the first stays on #pricing).
+ */
+async function findVeo3LoggedInPage(ctx: BrowserContext): Promise<Page | null> {
+  let pages: Page[] = []
+  try {
+    pages = ctx.pages()
+  } catch {
+    return null
+  }
+  for (const page of pages) {
+    try {
+      if (page.isClosed()) continue
+      const url = page.url()
+      if (isOAuthOrGoogleSignInUrl(url)) continue
+      if (!/labs\.google\/fx\/vi\/tools\/flow/i.test(url)) continue
+      if (await isVeo3PageLoggedIn(page)) return page
+    } catch {
+      continue
+    }
+  }
+  return null
+}
+
+function pickOpenFlowPage(entry: Veo3ProfileEntry): Page | undefined {
+  if (!entry.ctx) return entry.page
+  try {
+    const open = entry.ctx.pages().filter((p) => {
+      try { return !p.isClosed() } catch { return false }
+    })
+    if (open.length === 0) return entry.page
+    const primary = entry.page
+    if (primary) {
+      try {
+        if (!primary.isClosed() && /labs\.google\/fx\/vi\/tools\/flow/i.test(primary.url())) return primary
+      } catch { /* use fallback */ }
+    }
+    const flowTab = open.find((p) => {
+      try { return /labs\.google\/fx\/vi\/tools\/flow/i.test(p.url()) } catch { return false }
+    })
+    return flowTab ?? open[0]
+  } catch {
+    return entry.page
+  }
+}
+
+/**
+ * Returns true if any Flow tab is logged in; updates entry.page to that tab for automation.
+ */
+async function resolveVeo3ProfileReady(entry: Veo3ProfileEntry): Promise<boolean> {
+  if (!entry.ctx) return false
+  const found = await findVeo3LoggedInPage(entry.ctx)
+  if (found) {
+    entry.page = found
+    return true
+  }
+  const p = pickOpenFlowPage(entry)
+  if (p) entry.page = p
+  if (!entry.page) return false
+  try {
+    if (entry.page.isClosed()) return false
+  } catch {
+    return false
+  }
+  return isVeo3ProfileReallyReadySingleTab(entry.page)
+}
+
+async function isVeo3ProfileReallyReadySingleTab(page: Page): Promise<boolean> {
+  try {
+    if (page.isClosed()) return false
+    const currentUrl = page.url()
+    if (isOAuthOrGoogleSignInUrl(currentUrl)) {
+      await page.waitForTimeout(300).catch(() => null)
+      return false
+    }
+    if (!/labs\.google\/fx\/vi\/tools\/flow/i.test(currentUrl)) {
+      await page.goto(VEO3_FLOW_URL, { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => null)
+      await page.waitForTimeout(400).catch(() => null)
+    }
+    const ok = await isVeo3PageLoggedIn(page)
+    if (ok) return true
+    await page.waitForTimeout(700).catch(() => null)
+    return await isVeo3PageLoggedIn(page)
+  } catch {
+    return false
+  }
+}
+
 interface Veo3ProfileEntry {
   profileId: string
   profileDir: string
@@ -1448,24 +1548,6 @@ async function isVeo3PageLoggedIn(page: Page): Promise<boolean> {
   return false
 }
 
-async function isVeo3ProfileReallyReady(page: Page): Promise<boolean> {
-  try {
-    if (page.isClosed()) return false
-    const currentUrl = page.url()
-    if (!/labs\.google\/fx\/vi\/tools\/flow/i.test(currentUrl)) {
-      await page.goto(VEO3_FLOW_URL, { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => null)
-      await page.waitForTimeout(400).catch(() => null)
-    }
-    const ok = await isVeo3PageLoggedIn(page)
-    if (ok) return true
-    // One more short recheck to avoid false negatives when page just switched/state still painting.
-    await page.waitForTimeout(700).catch(() => null)
-    return await isVeo3PageLoggedIn(page)
-  } catch {
-    return false
-  }
-}
-
 async function tryGetEmailFromFlowPage(page: Page): Promise<string | undefined> {
   try {
     const email = await page.evaluate(() => {
@@ -1479,18 +1561,18 @@ async function tryGetEmailFromFlowPage(page: Page): Promise<string | undefined> 
   }
 }
 
-async function pollVeo3LoginState(profileId: string, profileDir: string, page: Page | null): Promise<void> {
-  if (!page) {
+async function pollVeo3LoginState(entry: Veo3ProfileEntry): Promise<void> {
+  const { profileId, profileDir } = entry
+  if (!entry.ctx) {
     writeVeo3Status(profileDir, false)
     send('veo3-profile-status', { profileId, loggedIn: false })
     return
   }
   try {
-    const loggedIn = await isVeo3ProfileReallyReady(page)
-    const entry = veo3Profiles.find(v => v.profileId === profileId)
-    if (entry) entry.loggedIn = loggedIn
-    if (loggedIn) {
-      const email = await tryGetEmailFromFlowPage(page)
+    const loggedIn = await resolveVeo3ProfileReady(entry)
+    entry.loggedIn = loggedIn
+    if (loggedIn && entry.page) {
+      const email = await tryGetEmailFromFlowPage(entry.page)
       writeVeo3Status(profileDir, true, email)
       send('veo3-profile-status', { profileId, loggedIn: true, email })
     } else {
@@ -1498,8 +1580,7 @@ async function pollVeo3LoginState(profileId: string, profileDir: string, page: P
       send('veo3-profile-status', { profileId, loggedIn: false })
     }
   } catch {
-    const entry = veo3Profiles.find(v => v.profileId === profileId)
-    if (entry) entry.loggedIn = false
+    entry.loggedIn = false
     writeVeo3Status(profileDir, false)
     send('veo3-profile-status', { profileId, loggedIn: false })
   }
@@ -1527,7 +1608,7 @@ ipcMain.handle('veo3-open-profiles', async (_event, count: number) => {
       browser.on('disconnected', () => removeVeo3Entry(profileId))
       writeVeo3Status(profileDir, false)
       send('veo3-profile-status', { profileId, loggedIn: false })
-      const poll = () => pollVeo3LoginState(profileId, profileDir, entry.page ?? null)
+      const poll = () => pollVeo3LoginState(entry)
       setTimeout(poll, VEO3_FIRST_POLL_DELAY_MS)
       setInterval(poll, VEO3_POLL_INTERVAL_MS)
     } catch (err: any) {
@@ -1559,7 +1640,7 @@ ipcMain.handle('veo3-open-selected-profiles', async (_event, profileIds: string[
       opened += 1
       writeVeo3Status(profileDir, false)
       send('veo3-profile-status', { profileId, loggedIn: false })
-      const poll = () => pollVeo3LoginState(profileId, profileDir, entry.page ?? null)
+      const poll = () => pollVeo3LoginState(entry)
       setTimeout(poll, VEO3_FIRST_POLL_DELAY_MS)
       setInterval(poll, VEO3_POLL_INTERVAL_MS)
     } catch (err: any) {
@@ -1754,13 +1835,13 @@ ipcMain.handle('veo3-run-queue', async (_event,   queue: Array<{
   const profiles: Array<{ page: Page; profileId: string }> = []
   for (const v of veo3Profiles) {
     if (veo3QueueAbortRequested) break
-    if (!v.page) continue
-    let ready = await isVeo3ProfileReallyReady(v.page)
-    if (!ready) {
+    if (!v.ctx) continue
+    let ready = await resolveVeo3ProfileReady(v)
+    if (!ready && v.page && !isOAuthOrGoogleSignInUrl(v.page.url())) {
       // Second chance before excluding this profile from run distribution.
       await v.page.goto(VEO3_FLOW_URL, { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => null)
       await v.page.waitForTimeout(600).catch(() => null)
-      ready = await isVeo3ProfileReallyReady(v.page)
+      ready = await resolveVeo3ProfileReady(v)
     }
     v.loggedIn = ready
     if (ready) {

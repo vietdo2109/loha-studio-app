@@ -83,7 +83,7 @@ export function Veo3ProfilesModal({
   return (
     <Modal title="Veo3 (Google Flow) — Profiles" onClose={onClose} width={480}>
       <p style={{ fontSize: 12, color: "var(--text2)", marginBottom: 12 }}>
-        Mở N profile trình duyệt, đăng nhập Google thủ công trên từng tab (Flow → Get started Free). Tool sẽ nhận diện đã đăng nhập và lưu trạng thái.
+        Mở N profile trình duyệt, đăng nhập Google thủ công (Flow → Get started / đăng nhập). Có thể mở tab mới tới Flow nếu tab pricing bị vòng lặp — tool nhận diện theo mọi tab Flow đã đăng nhập và gắn automation đúng tab.
       </p>
       <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 16 }}>
         <input
