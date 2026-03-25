@@ -182,7 +182,6 @@ export function NewProjectModal({ onClose, onSave, initial, scripts = [] }: {
               value={resolution}
               onChange={setResolution}
               options={["480p", "720p"]}
-              disabledOptions={["720p"]}
             />
           </div>
           <div>
@@ -191,7 +190,6 @@ export function NewProjectModal({ onClose, onSave, initial, scripts = [] }: {
               value={duration}
               onChange={setDuration}
               options={["6s", "10s"]}
-              disabledOptions={["10s"]}
             />
           </div>
         </div>

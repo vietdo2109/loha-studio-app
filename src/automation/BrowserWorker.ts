@@ -84,10 +84,12 @@ export class BrowserWorker {
       this.emit('progress', { jobId: job.id, step: 'AI dang render...', percent: 55 })
       await waitForGeneration(ctx, job)
 
-      const needUpscale = isVideoOutput(job)
+      const needUpscale = isVideoOutput(job) && (job as { resolution?: string }).resolution !== '720p'
       if (needUpscale) {
         this.emit('progress', { jobId: job.id, step: 'Upscale video...', percent: 75 })
         await upscaleVideo(ctx, job)
+      } else if (isVideoOutput(job)) {
+        this.log('info', '720p mode: bo qua upscale, tai ve ngay')
       }
 
       this.emit('progress', { jobId: job.id, step: 'Dang tai file ve...', percent: 90 })
