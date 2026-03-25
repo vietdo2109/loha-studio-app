@@ -758,6 +758,7 @@ export interface UploadLogEntry {
 }
 
 export async function flowUploadImages(page: Page, imagePaths: string[], mode: Veo3VideoMode = 'frames', opts: { leaveDialogOpen?: boolean } = {}): Promise<{ orderedNames: string[]; uploadLog: UploadLogEntry[] }> {
+  return await withImageImportBusy(page, async () => {
   await bringProjectPageToFront(page, { bypassLock: true })
   const valid = imagePaths.filter(p => p && fs.existsSync(p))
   if (valid.length === 0) throw new Error('No valid image paths')
@@ -1017,6 +1018,7 @@ export async function flowUploadImages(page: Page, imagePaths: string[], mode: V
   }
   stepLog(`Step 3: Done — images uploaded. Upload log: ${uploadLog.length} request(s)`)
   return { orderedNames, uploadLog }
+  })
 }
 
 /** 4a. Right-click an uploaded tile (by DOM index) and click "Thêm vào câu lệnh" */
@@ -1216,10 +1218,25 @@ export async function flowAddImageToPromptByMediaName(page: Page, mediaName: str
         const norm = (s: string) => s.replace(/\s+/g, ' ').trim()
         const wantedNorm = norm(wanted)
 
-        const row = rows.find(r => {
+        let row = rows.find(r => {
           const text = norm(r.textContent || '')
           return text === wantedNorm || text.includes(wantedNorm)
         })
+        if (!row) {
+          row = rows.find(r => {
+            const img = r.querySelector('img[src*="name="]') as HTMLImageElement | null
+            if (!img) return false
+            const src = img.getAttribute('src') || ''
+            if (src.includes(`name=${wanted}`) || src.includes(`name=${encodeURIComponent(wanted)}`)) return true
+            try {
+              const url = new URL(src, location.origin)
+              const name = url.searchParams.get('name')
+              return !!name && decodeURIComponent(name) === wanted
+            } catch {
+              return false
+            }
+          })
+        }
         if (!row) return { ok: false, reason: 'row-not-found-by-filename' }
 
         row.scrollIntoView({ block: 'center' })
@@ -1317,17 +1334,22 @@ export async function flowAddImagesToPromptFromOrderedNames(
   page: Page,
   orderedNames: string[],
   twoSlots: boolean = true
-): Promise<void> {
-  if (orderedNames.length === 0) return
+): Promise<boolean> {
+  if (orderedNames.length === 0) return false
   try {
     await flowAddImageToPromptByMediaName(page, orderedNames[0], 0)
     if (twoSlots) {
       const nameForSlot1 = orderedNames.length >= 2 ? orderedNames[1] : orderedNames[0]
       await flowAddImageToPromptByMediaName(page, nameForSlot1, 1)
     }
+    return true
   } catch (e) {
-    logImageImportHardStopGuidance('step4-add-images-from-ordered-names')
-    throw new Error(`Step 4 hard stop: failed to add images from ordered names: ${(e as Error).message}`)
+    stepLog(`[WARN] Step 4: add-images-from-ordered-names failed: ${(e as Error).message}`)
+    await captureImageImportTrace(page, 'add-images-from-ordered-names-failed', {
+      orderedNames: orderedNames.slice(0, 2),
+      error: (e as Error).message,
+    })
+    return false
   }
 }
 
@@ -2157,6 +2179,8 @@ export async function flowWaitAndDownloadAllGeneratedVideos1080pUsingParser(
   let nextRetryAllowedAt = 0
   let maxObservedTotalSlots = 0
   let lastVirtualizedSweepAt = 0
+  let lastDownloadedCount = 0
+  let enteredFinalReconcileStep = false
 
   const workflowKeyForTile = (workflowId: string | null | undefined, outputFileName: string): string =>
     workflowId && workflowId.length > 0 ? workflowId : `no-workflow:${outputFileName}`
@@ -2196,6 +2220,59 @@ export async function flowWaitAndDownloadAllGeneratedVideos1080pUsingParser(
   }
   await page.waitForTimeout(400)
 
+  const forceVirtualizedListSweep = async (reason: string): Promise<void> => {
+    if (isImageImportBusy(page) || isPromptInputBusy(page)) return
+    if (Date.now() - lastVirtualizedSweepAt < 10000) return
+    lastVirtualizedSweepAt = Date.now()
+    try {
+      const listScroller = page.locator('[data-virtuoso-scroller="true"]').first()
+      const scrollerVisible = await listScroller.isVisible().catch(() => false)
+      if (scrollerVisible) {
+        await listScroller.hover().catch(() => {})
+      } else {
+        // Fallback: bring list container into view before slow-scan.
+        await page.locator(S.generatedListContainer).first().scrollIntoViewIfNeeded().catch(async () => {
+          await page.locator(S.generatedListContainerFallback).first().scrollIntoViewIfNeeded()
+        })
+      }
+
+      const metrics = await page.evaluate(() => {
+        const el = document.querySelector('[data-virtuoso-scroller="true"]') as HTMLElement | null
+        if (!el) return null
+        return {
+          maxTop: Math.max(0, el.scrollHeight - el.clientHeight),
+          clientHeight: Math.max(1, el.clientHeight),
+        }
+      }).catch(() => null)
+
+      if (!metrics) {
+        await page.mouse.wheel(0, 2200).catch(() => {})
+        await page.waitForTimeout(350)
+        await page.mouse.wheel(0, -2200).catch(() => {})
+        stepLog(`Forced virtualized-list quick sweep fallback: ${reason}`)
+        return
+      }
+
+      const stepPx = Math.max(220, Math.floor(metrics.clientHeight * 0.45))
+      const pauseMs = 240
+
+      // Final reconciliation sweep: top -> bottom slowly to reveal all virtualized rows.
+      for (let top = 0; top <= metrics.maxTop; top += stepPx) {
+        if (isImageImportBusy(page) || isPromptInputBusy(page)) return
+        await page.evaluate((nextTop: number) => {
+          const el = document.querySelector('[data-virtuoso-scroller="true"]') as HTMLElement | null
+          if (!el) return
+          el.scrollTop = nextTop
+          el.dispatchEvent(new Event('scroll', { bubbles: true }))
+        }, top).catch(() => null)
+        await page.waitForTimeout(pauseMs)
+      }
+      stepLog(`Forced virtualized-list slow top->bottom sweep: ${reason} (step=${stepPx}px)`)
+    } catch (e) {
+      stepLog(`Virtualized-list sweep skipped: ${(e as Error).message}`)
+    }
+  }
+
   let pollCount = 0
   while (Date.now() < deadline) {
     const data = await getParsedGeneratedListWithFallback(page)
@@ -2226,6 +2303,9 @@ export async function flowWaitAndDownloadAllGeneratedVideos1080pUsingParser(
       stepLog(`Poll #${pollCount}: videos=${data.videos.length} generating=${data.generating.length} failed=${data.failed.length} rows=${data.rows.length} totalSlots=${data.totalVideoSlots}`)
 
     if (opts.onProgress) opts.onProgress(downloadedOutputNames.size)
+    if (downloadedOutputNames.size > lastDownloadedCount) {
+      lastDownloadedCount = downloadedOutputNames.size
+    }
 
     const hasWork =
       data.failed.some(f => (failedGenerationRetryAttemptsBySlot.get(failedRetrySlotKey(f)) ?? 0) < FAILED_GENERATION_MAX_RETRY_CLICKS) ||
@@ -2438,30 +2518,15 @@ export async function flowWaitAndDownloadAllGeneratedVideos1080pUsingParser(
     const expectedSatisfied = expectedCount === 0 || coverageCount >= expectedCount
     const canConsiderDone = doneShapeReached && expectedSatisfied
     if (doneShapeReached && !expectedSatisfied) {
+      if (!enteredFinalReconcileStep) {
+        enteredFinalReconcileStep = true
+        stepLog('Final reconciliation step: flow done, coverage still missing — start slow top->bottom sweep')
+      }
       stepLog(
         `Done-shape reached but coverage not enough: downloaded=${downloadedOutputNames.size}, permanentFailures=${permanentUpsampleFailureWorkflowKeys.size}, coverage=${coverageCount}/${expectedCount}, visibleSlots=${data.totalVideoSlots}, maxObservedSlots=${maxObservedTotalSlots}. Continue tracking.`
       )
       // Virtualized list can hide older tiles; force a periodic sweep so parser can see more rows/slots.
-      if (Date.now() - lastVirtualizedSweepAt >= 15000) {
-        lastVirtualizedSweepAt = Date.now()
-        try {
-          await page.evaluate((selector: string) => {
-            const el = document.querySelector(selector) as HTMLElement | null
-            if (!el) return
-            el.scrollTop = 0
-            el.dispatchEvent(new Event('scroll', { bubbles: true }))
-            el.scrollTop = el.scrollHeight
-            el.dispatchEvent(new Event('scroll', { bubbles: true }))
-          }, S.generatedListContainer)
-          await page.waitForTimeout(400)
-          await page.mouse.wheel(0, 1800)
-          await page.waitForTimeout(400)
-          await page.mouse.wheel(0, -1800)
-          stepLog('Forced virtualized-list sweep to reveal hidden video rows')
-        } catch (e) {
-          stepLog(`Virtualized-list sweep skipped: ${(e as Error).message}`)
-        }
-      }
+      await forceVirtualizedListSweep('final-reconciliation-missing-coverage')
     }
     if (canConsiderDone) {
       stepLog(
@@ -2647,8 +2712,9 @@ export async function runVeo3ProjectFlowByGroups(
       const validPaths = group.imagePaths.filter(p => p && fs.existsSync(p))
       if (validPaths.length > 0) {
         stepLog(`Group ${g + 1}/${groups.length}: upload ${validPaths.length} image(s), then ${group.prompts.length} prompt(s)`)
-        await flowUploadImages(page, validPaths, mode, { leaveDialogOpen: true })
+        const firstUpload = await flowUploadImages(page, validPaths, mode, { leaveDialogOpen: true })
         const localFileNames = validPaths.map(p => path.basename(p))
+        let imageKeys = firstUpload.orderedNames.length > 0 ? firstUpload.orderedNames : localFileNames
         await waitStable(page, 800)
         for (let p = 0; p < group.prompts.length; p++) {
           assertNotStopped(shouldStop)
@@ -2656,7 +2722,19 @@ export async function runVeo3ProjectFlowByGroups(
           const twoSlots = false
           const promptText = group.prompts[p]
           await flowPreparePromptText(page, promptText)
-          await flowAddImagesToPromptFromOrderedNames(page, localFileNames, twoSlots)
+          let imageAdded = await flowAddImagesToPromptFromOrderedNames(page, imageKeys, twoSlots)
+          if (!imageAdded) {
+            stepLog('[WARN] Step 4 failed on first try — reopen upload dialog and retry once')
+            const retryUpload = await flowUploadImages(page, validPaths, mode, { leaveDialogOpen: true })
+            imageKeys = retryUpload.orderedNames.length > 0 ? retryUpload.orderedNames : localFileNames
+            imageAdded = await flowAddImagesToPromptFromOrderedNames(page, imageKeys, twoSlots)
+          }
+          if (!imageAdded) {
+            stepLog(`[WARN] Step 4 unrecoverable for prompt ${p + 1}/${group.prompts.length} — skip this prompt, continue next`)
+            await page.keyboard.press('Escape').catch(() => {})
+            await waitStable(page, 250)
+            continue
+          }
           await page.keyboard.press('Escape')
           await waitStable(page)
           await flowTypePromptAndSubmit(page, promptText, { expectImageInPrompt: true, skipFill: true })

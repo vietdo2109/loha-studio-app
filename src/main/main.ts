@@ -1845,9 +1845,14 @@ ipcMain.handle('veo3-run-queue', async (_event,   queue: Array<{
     }
     v.loggedIn = ready
     if (ready) {
-      const email = await tryGetEmailFromFlowPage(v.page).catch(() => undefined)
+      const readyPage = v.page
+      if (!readyPage) {
+        send('veo3-profile-status', { profileId: v.profileId, loggedIn: false })
+        continue
+      }
+      const email = await tryGetEmailFromFlowPage(readyPage).catch(() => undefined)
       send('veo3-profile-status', { profileId: v.profileId, loggedIn: true, ...(email ? { email } : {}) })
-      profiles.push({ page: v.page, profileId: v.profileId })
+      profiles.push({ page: readyPage, profileId: v.profileId })
     } else {
       send('veo3-profile-status', { profileId: v.profileId, loggedIn: false })
     }
