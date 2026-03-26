@@ -84,10 +84,17 @@ export default function App() {
     screenshotPath?: string
   } | null>(null)
   const sessionJobFailCountRef = useRef(0)
+  const seenVeo3BlockedProfilesRef = useRef<Set<string>>(new Set())
   const [blockingUiNotice, setBlockingUiNotice] = useState<{ stepLabel: string; message: string } | null>(null)
   const [veo3ProfileBlockedNotice, setVeo3ProfileBlockedNotice] = useState<{ profileId: string; message: string } | null>(null)
   const closeBlockingUiNotice = useCallback(() => setBlockingUiNotice(null), [])
   const closeVeo3ProfileBlockedNotice = useCallback(() => setVeo3ProfileBlockedNotice(null), [])
+
+  useEffect(() => {
+    if (veo3ProfileBlockedNotice == null) return
+    const t = window.setTimeout(() => setVeo3ProfileBlockedNotice(null), 18000)
+    return () => window.clearTimeout(t)
+  }, [veo3ProfileBlockedNotice])
 
   const appName = typeof __APP_NAME__ !== 'undefined' ? __APP_NAME__ : 'Loha Studio'
   useEffect(() => {
@@ -456,9 +463,13 @@ export default function App() {
       payload: { profileId?: string; message?: string }
     ) => {
       const profileId = payload?.profileId ?? 'unknown'
-      const message = payload?.message ?? `Profile ${profileId} bị server block 403, vui lòng mở profile mới.`
+      if (seenVeo3BlockedProfilesRef.current.has(profileId)) return
+      seenVeo3BlockedProfilesRef.current.add(profileId)
+      const message =
+        payload?.message ??
+        `Profile ${profileId} bị server block 403. Đã dừng tạo video mới trên profile này; tool vẫn tiếp tục tải các video đã hoàn thành.`
       setVeo3ProfileBlockedNotice({ profileId, message })
-      setErrors(prev => [...prev, message])
+      setErrors(prev => (prev.includes(message) ? prev : [...prev, message]))
     }
     api.onVeo3ProfileBlocked?.(handleVeo3ProfileBlocked)
 

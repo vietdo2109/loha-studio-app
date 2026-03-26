@@ -1329,9 +1329,52 @@ interface Veo3ProfileEntry {
   chromeProcess?: ChildProcess
   debugPort?: number
   loggedIn?: boolean
+  blockedByServer?: boolean
+  loginPollTimer?: ReturnType<typeof setInterval>
 }
 
 let veo3Profiles: Veo3ProfileEntry[] = []
+const veo3LoginStability = new Map<string, { stableLoggedIn: boolean; okStreak: number; failStreak: number; lastEmail?: string }>()
+const VEO3_LOGIN_OK_STREAK_REQUIRED = 2
+const VEO3_LOGIN_FAIL_STREAK_REQUIRED = 3
+
+function updateStableVeo3ProfileStatus(
+  profileId: string,
+  observedLoggedIn: boolean,
+  email?: string
+): { stableLoggedIn: boolean; changed: boolean; emit: { profileId: string; loggedIn: boolean; email?: string } } {
+  const prev = veo3LoginStability.get(profileId) ?? { stableLoggedIn: false, okStreak: 0, failStreak: 0, lastEmail: undefined }
+  const next = { ...prev }
+  if (observedLoggedIn) {
+    next.okStreak += 1
+    next.failStreak = 0
+  } else {
+    next.failStreak += 1
+    next.okStreak = 0
+  }
+
+  let changed = false
+  if (next.stableLoggedIn) {
+    if (!observedLoggedIn && next.failStreak >= VEO3_LOGIN_FAIL_STREAK_REQUIRED) {
+      next.stableLoggedIn = false
+      changed = true
+    }
+  } else if (observedLoggedIn && next.okStreak >= VEO3_LOGIN_OK_STREAK_REQUIRED) {
+    next.stableLoggedIn = true
+    changed = true
+  }
+
+  const emailChanged = next.stableLoggedIn && email && email !== next.lastEmail
+  if (emailChanged) next.lastEmail = email
+  if (!next.stableLoggedIn) next.lastEmail = undefined
+  veo3LoginStability.set(profileId, next)
+
+  return {
+    stableLoggedIn: next.stableLoggedIn,
+    changed: changed || emailChanged,
+    emit: { profileId, loggedIn: next.stableLoggedIn, ...(next.stableLoggedIn && next.lastEmail ? { email: next.lastEmail } : {}) },
+  }
+}
 
 function parseProfileOrdinal(profileId: string): number {
   const m = profileId.match(/^profile-(\d{3})$/)
@@ -1430,8 +1473,13 @@ function removeVeo3Entry(profileId: string): void {
   if (idx >= 0) {
     const entry = veo3Profiles[idx]
     const profileDir = entry.profileDir
+    if (entry.loginPollTimer) {
+      clearInterval(entry.loginPollTimer)
+      entry.loginPollTimer = undefined
+    }
     stopOwnedChromeProcess(entry.chromeProcess)
     veo3Profiles.splice(idx, 1)
+    veo3LoginStability.delete(profileId)
     writeVeo3Status(profileDir, false)
     send('veo3-profile-status', { profileId, loggedIn: false })
   }
@@ -1563,27 +1611,49 @@ async function tryGetEmailFromFlowPage(page: Page): Promise<string | undefined> 
 
 async function pollVeo3LoginState(entry: Veo3ProfileEntry): Promise<void> {
   const { profileId, profileDir } = entry
+  if (entry.blockedByServer) {
+    // Keep blocked profile state stable; avoid poll toggling back to "logged in".
+    return
+  }
   if (!entry.ctx) {
     writeVeo3Status(profileDir, false)
-    send('veo3-profile-status', { profileId, loggedIn: false })
+    const status = updateStableVeo3ProfileStatus(profileId, false)
+    entry.loggedIn = status.stableLoggedIn
+    if (status.changed) send('veo3-profile-status', status.emit)
     return
   }
   try {
-    const loggedIn = await resolveVeo3ProfileReady(entry)
-    entry.loggedIn = loggedIn
-    if (loggedIn && entry.page) {
-      const email = await tryGetEmailFromFlowPage(entry.page)
-      writeVeo3Status(profileDir, true, email)
-      send('veo3-profile-status', { profileId, loggedIn: true, email })
+    const observedLoggedIn = await resolveVeo3ProfileReady(entry)
+    const email = observedLoggedIn && entry.page ? await tryGetEmailFromFlowPage(entry.page) : undefined
+    const status = updateStableVeo3ProfileStatus(profileId, observedLoggedIn, email)
+    entry.loggedIn = status.stableLoggedIn
+    if (status.stableLoggedIn) {
+      writeVeo3Status(profileDir, true, status.emit.email)
     } else {
       writeVeo3Status(profileDir, false)
-      send('veo3-profile-status', { profileId, loggedIn: false })
     }
+    if (status.changed) send('veo3-profile-status', status.emit)
   } catch {
-    entry.loggedIn = false
-    writeVeo3Status(profileDir, false)
-    send('veo3-profile-status', { profileId, loggedIn: false })
+    const status = updateStableVeo3ProfileStatus(profileId, false)
+    entry.loggedIn = status.stableLoggedIn
+    if (!status.stableLoggedIn) writeVeo3Status(profileDir, false)
+    if (status.changed) send('veo3-profile-status', status.emit)
   }
+}
+
+function markVeo3ProfileBlocked(profileId: string, reasonMessage: string): void {
+  const entry = veo3Profiles.find(v => v.profileId === profileId)
+  if (!entry) return
+  entry.blockedByServer = true
+  entry.loggedIn = false
+  veo3LoginStability.set(profileId, { stableLoggedIn: false, okStreak: 0, failStreak: VEO3_LOGIN_FAIL_STREAK_REQUIRED, lastEmail: undefined })
+  writeVeo3Status(entry.profileDir, false)
+  send('veo3-profile-status', { profileId, loggedIn: false })
+  send('veo3-profile-blocked', {
+    profileId,
+    reason: 'SERVER_BLOCK_403',
+    message: reasonMessage,
+  })
 }
 
 ipcMain.handle('veo3-open-profiles', async (_event, count: number) => {
@@ -1602,7 +1672,7 @@ ipcMain.handle('veo3-open-profiles', async (_event, count: number) => {
     fs.mkdirSync(profileDir, { recursive: true })
     try {
       const { browser, ctx, page, chromeProcess, debugPort } = await openVeo3ProfileViaChromeCdp(profileId, profileDir)
-      const entry: Veo3ProfileEntry = { profileId, profileDir, browser, ctx, page, chromeProcess, debugPort, loggedIn: false }
+      const entry: Veo3ProfileEntry = { profileId, profileDir, browser, ctx, page, chromeProcess, debugPort, loggedIn: false, blockedByServer: false }
       veo3Profiles.push(entry)
       ctx.on('close', () => removeVeo3Entry(profileId))
       browser.on('disconnected', () => removeVeo3Entry(profileId))
@@ -1610,7 +1680,7 @@ ipcMain.handle('veo3-open-profiles', async (_event, count: number) => {
       send('veo3-profile-status', { profileId, loggedIn: false })
       const poll = () => pollVeo3LoginState(entry)
       setTimeout(poll, VEO3_FIRST_POLL_DELAY_MS)
-      setInterval(poll, VEO3_POLL_INTERVAL_MS)
+      entry.loginPollTimer = setInterval(poll, VEO3_POLL_INTERVAL_MS)
     } catch (err: any) {
       appLog('error', `Veo3 open profile ${profileId}: ${err.message}`, 'main')
       send('veo3-profile-status', { profileId, loggedIn: false, error: err.message })
@@ -1633,7 +1703,7 @@ ipcMain.handle('veo3-open-selected-profiles', async (_event, profileIds: string[
     fs.mkdirSync(profileDir, { recursive: true })
     try {
       const { browser, ctx, page, chromeProcess, debugPort } = await openVeo3ProfileViaChromeCdp(profileId, profileDir)
-      const entry: Veo3ProfileEntry = { profileId, profileDir, browser, ctx, page, chromeProcess, debugPort, loggedIn: false }
+      const entry: Veo3ProfileEntry = { profileId, profileDir, browser, ctx, page, chromeProcess, debugPort, loggedIn: false, blockedByServer: false }
       veo3Profiles.push(entry)
       ctx.on('close', () => removeVeo3Entry(profileId))
       browser.on('disconnected', () => removeVeo3Entry(profileId))
@@ -1642,7 +1712,7 @@ ipcMain.handle('veo3-open-selected-profiles', async (_event, profileIds: string[
       send('veo3-profile-status', { profileId, loggedIn: false })
       const poll = () => pollVeo3LoginState(entry)
       setTimeout(poll, VEO3_FIRST_POLL_DELAY_MS)
-      setInterval(poll, VEO3_POLL_INTERVAL_MS)
+      entry.loginPollTimer = setInterval(poll, VEO3_POLL_INTERVAL_MS)
     } catch (err: any) {
       appLog('error', `Veo3 open profile ${profileId}: ${err.message}`, 'main')
       send('veo3-profile-status', { profileId, loggedIn: false, error: err.message })
@@ -1653,11 +1723,16 @@ ipcMain.handle('veo3-open-selected-profiles', async (_event, profileIds: string[
 
 ipcMain.handle('veo3-close-all', async () => {
   for (const v of veo3Profiles) {
+    if (v.loginPollTimer) {
+      clearInterval(v.loginPollTimer)
+      v.loginPollTimer = undefined
+    }
     v.browser?.close().catch(() => {})
     v.ctx?.close().catch(() => {})
     stopOwnedChromeProcess(v.chromeProcess)
   }
   veo3Profiles = []
+  veo3LoginStability.clear()
 })
 
 ipcMain.handle('veo3-delete-profile', async (_event, profileId: string) => {
@@ -1836,6 +1911,10 @@ ipcMain.handle('veo3-run-queue', async (_event,   queue: Array<{
   for (const v of veo3Profiles) {
     if (veo3QueueAbortRequested) break
     if (!v.ctx) continue
+    if (v.blockedByServer) {
+      send('veo3-profile-status', { profileId: v.profileId, loggedIn: false })
+      continue
+    }
     let ready = await resolveVeo3ProfileReady(v)
     if (!ready && v.page && !isOAuthOrGoogleSignInUrl(v.page.url())) {
       // Second chance before excluding this profile from run distribution.
@@ -1998,12 +2077,7 @@ ipcMain.handle('veo3-run-queue', async (_event,   queue: Array<{
       if (/target page, context or browser has been closed|page.*closed|context.*closed/i.test(msg)) removeVeo3Entry(entry.profileId)
       if (profileBlocked) {
         appLog('warn', `Veo3 profile ${entry.profileId} appears blocked (403/recaptcha). Stop using this profile for current queue run.`, 'veo3')
-        send('veo3-profile-blocked', {
-          profileId: entry.profileId,
-          reason: 'SERVER_BLOCK_403',
-          message: `Profile ${entry.profileId} bị server block 403, vui lòng mở profile mới.`,
-        })
-        removeVeo3Entry(entry.profileId)
+        markVeo3ProfileBlocked(entry.profileId, `Profile ${entry.profileId} bị server block 403. Đã dừng tạo video mới trên profile này; vẫn giữ profile để tải nốt video đã hoàn thành.`)
       }
       const stepLabel = describeFlowStepFromError(err)
       const logDirErr = getLogDirectory()

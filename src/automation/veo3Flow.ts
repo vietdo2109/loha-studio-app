@@ -2155,7 +2155,14 @@ export async function flowWaitAndDownloadAllGeneratedVideos1080pUsingParser(
   page: Page,
   outputDir: string,
   expectedCount: number,
-  opts: { timeoutMs?: number; onProgress?: (completedCount: number) => void; actionQueue?: ActionQueue; unordered?: boolean; downloadResolution?: Veo3DownloadResolution } = {}
+  opts: {
+    timeoutMs?: number
+    onProgress?: (completedCount: number) => void
+    actionQueue?: ActionQueue
+    unordered?: boolean
+    downloadResolution?: Veo3DownloadResolution
+    isProducerFinished?: () => boolean
+  } = {}
 ): Promise<string[]> {
   const unordered = opts.unordered === true
   const resolution: Veo3DownloadResolution = opts.downloadResolution ?? '1080p'
@@ -2181,6 +2188,9 @@ export async function flowWaitAndDownloadAllGeneratedVideos1080pUsingParser(
   let lastVirtualizedSweepAt = 0
   let lastDownloadedCount = 0
   let enteredFinalReconcileStep = false
+  let finalReconcileSweepRounds = 0
+  let finalReconcileNoGainRounds = 0
+  let finalReconcileLastCoverage = 0
 
   const workflowKeyForTile = (workflowId: string | null | undefined, outputFileName: string): string =>
     workflowId && workflowId.length > 0 ? workflowId : `no-workflow:${outputFileName}`
@@ -2247,14 +2257,14 @@ export async function flowWaitAndDownloadAllGeneratedVideos1080pUsingParser(
 
       if (!metrics) {
         await page.mouse.wheel(0, 2200).catch(() => {})
-        await page.waitForTimeout(350)
+        await page.waitForTimeout(200)
         await page.mouse.wheel(0, -2200).catch(() => {})
         stepLog(`Forced virtualized-list quick sweep fallback: ${reason}`)
         return
       }
 
-      const stepPx = Math.max(220, Math.floor(metrics.clientHeight * 0.45))
-      const pauseMs = 240
+      const stepPx = Math.max(260, Math.floor(metrics.clientHeight * 0.72))
+      const pauseMs = 120
 
       // Final reconciliation sweep: top -> bottom slowly to reveal all virtualized rows.
       for (let top = 0; top <= metrics.maxTop; top += stepPx) {
@@ -2267,6 +2277,12 @@ export async function flowWaitAndDownloadAllGeneratedVideos1080pUsingParser(
         }, top).catch(() => null)
         await page.waitForTimeout(pauseMs)
       }
+      await page.evaluate(() => {
+        const el = document.querySelector('[data-virtuoso-scroller="true"]') as HTMLElement | null
+        if (!el) return
+        el.scrollTop = Math.max(0, el.scrollHeight - el.clientHeight)
+        el.dispatchEvent(new Event('scroll', { bubbles: true }))
+      }).catch(() => null)
       stepLog(`Forced virtualized-list slow top->bottom sweep: ${reason} (step=${stepPx}px)`)
     } catch (e) {
       stepLog(`Virtualized-list sweep skipped: ${(e as Error).message}`)
@@ -2515,18 +2531,33 @@ export async function flowWaitAndDownloadAllGeneratedVideos1080pUsingParser(
       !anyReadyVideoUndownloaded &&
       (downloadedOutputNames.size > 0 || expectedCount === 0)
     const coverageCount = downloadedOutputNames.size + permanentUpsampleFailureWorkflowKeys.size
+    const producerFinished = opts.isProducerFinished ? opts.isProducerFinished() : true
     const expectedSatisfied = expectedCount === 0 || coverageCount >= expectedCount
     const canConsiderDone = doneShapeReached && expectedSatisfied
-    if (doneShapeReached && !expectedSatisfied) {
+    if (doneShapeReached && !expectedSatisfied && producerFinished) {
       if (!enteredFinalReconcileStep) {
         enteredFinalReconcileStep = true
         stepLog('Final reconciliation step: flow done, coverage still missing — start slow top->bottom sweep')
       }
+      finalReconcileSweepRounds += 1
+      if (coverageCount > finalReconcileLastCoverage) {
+        finalReconcileLastCoverage = coverageCount
+        finalReconcileNoGainRounds = 0
+      } else {
+        finalReconcileNoGainRounds += 1
+      }
       stepLog(
-        `Done-shape reached but coverage not enough: downloaded=${downloadedOutputNames.size}, permanentFailures=${permanentUpsampleFailureWorkflowKeys.size}, coverage=${coverageCount}/${expectedCount}, visibleSlots=${data.totalVideoSlots}, maxObservedSlots=${maxObservedTotalSlots}. Continue tracking.`
+        `Done-shape reached but coverage not enough: downloaded=${downloadedOutputNames.size}, permanentFailures=${permanentUpsampleFailureWorkflowKeys.size}, coverage=${coverageCount}/${expectedCount}, visibleSlots=${data.totalVideoSlots}, maxObservedSlots=${maxObservedTotalSlots}, sweepRound=${finalReconcileSweepRounds}. Continue tracking.`
       )
       // Virtualized list can hide older tiles; force a periodic sweep so parser can see more rows/slots.
       await forceVirtualizedListSweep('final-reconciliation-missing-coverage')
+      if (finalReconcileNoGainRounds >= 3) {
+        stepLog(
+          `Final reconciliation stop: no coverage gain after ${finalReconcileNoGainRounds} sweep rounds (coverage=${coverageCount}/${expectedCount}).`
+        )
+        if (lastData) logFinalSlotStatus(lastData, downloadedOutputNames, permanentUpsampleFailures)
+        return saved
+      }
     }
     if (canConsiderDone) {
       stepLog(
@@ -2690,6 +2721,7 @@ export async function runVeo3ProjectFlowByGroups(
       })
     }
 
+    let producerFinished = false
     let downloadPromise: Promise<string[]> | null = null
     if (downloadOpts) {
       stepLog('Starting download tracker in parallel (non-blocking with submissions)')
@@ -2702,65 +2734,80 @@ export async function runVeo3ProjectFlowByGroups(
           onProgress: downloadOpts.onProgress,
           unordered: downloadOpts.unordered,
           downloadResolution: downloadOpts.downloadResolution ?? opts.downloadResolution ?? '1080p',
+          isProducerFinished: () => producerFinished,
         }
       )
     }
-
-    for (let g = 0; g < groups.length; g++) {
-      assertNotStopped(shouldStop)
-      const group = groups[g]
-      const validPaths = group.imagePaths.filter(p => p && fs.existsSync(p))
-      if (validPaths.length > 0) {
-        stepLog(`Group ${g + 1}/${groups.length}: upload ${validPaths.length} image(s), then ${group.prompts.length} prompt(s)`)
-        const firstUpload = await flowUploadImages(page, validPaths, mode, { leaveDialogOpen: true })
-        const localFileNames = validPaths.map(p => path.basename(p))
-        let imageKeys = firstUpload.orderedNames.length > 0 ? firstUpload.orderedNames : localFileNames
-        await waitStable(page, 800)
-        for (let p = 0; p < group.prompts.length; p++) {
-          assertNotStopped(shouldStop)
-          stepLog(`  Prompt ${p + 1}/${group.prompts.length}: add images, type, submit`)
-          const twoSlots = false
-          const promptText = group.prompts[p]
-          await flowPreparePromptText(page, promptText)
-          let imageAdded = await flowAddImagesToPromptFromOrderedNames(page, imageKeys, twoSlots)
-          if (!imageAdded) {
-            stepLog('[WARN] Step 4 failed on first try — reopen upload dialog and retry once')
-            const retryUpload = await flowUploadImages(page, validPaths, mode, { leaveDialogOpen: true })
-            imageKeys = retryUpload.orderedNames.length > 0 ? retryUpload.orderedNames : localFileNames
-            imageAdded = await flowAddImagesToPromptFromOrderedNames(page, imageKeys, twoSlots)
+    let producerError: unknown = null
+    try {
+      for (let g = 0; g < groups.length; g++) {
+        assertNotStopped(shouldStop)
+        const group = groups[g]
+        const validPaths = group.imagePaths.filter(p => p && fs.existsSync(p))
+        if (validPaths.length > 0) {
+          stepLog(`Group ${g + 1}/${groups.length}: upload ${validPaths.length} image(s), then ${group.prompts.length} prompt(s)`)
+          const firstUpload = await flowUploadImages(page, validPaths, mode, { leaveDialogOpen: true })
+          const localFileNames = validPaths.map(p => path.basename(p))
+          let imageKeys = firstUpload.orderedNames.length > 0 ? firstUpload.orderedNames : localFileNames
+          await waitStable(page, 800)
+          for (let p = 0; p < group.prompts.length; p++) {
+            assertNotStopped(shouldStop)
+            stepLog(`  Prompt ${p + 1}/${group.prompts.length}: add images, type, submit`)
+            const twoSlots = false
+            const promptText = group.prompts[p]
+            await flowPreparePromptText(page, promptText)
+            let imageAdded = await flowAddImagesToPromptFromOrderedNames(page, imageKeys, twoSlots)
+            if (!imageAdded) {
+              stepLog('[WARN] Step 4 failed on first try — reopen upload dialog and retry once')
+              const retryUpload = await flowUploadImages(page, validPaths, mode, { leaveDialogOpen: true })
+              imageKeys = retryUpload.orderedNames.length > 0 ? retryUpload.orderedNames : localFileNames
+              imageAdded = await flowAddImagesToPromptFromOrderedNames(page, imageKeys, twoSlots)
+            }
+            if (!imageAdded) {
+              stepLog(`[WARN] Step 4 unrecoverable for prompt ${p + 1}/${group.prompts.length} — skip this prompt, continue next`)
+              await page.keyboard.press('Escape').catch(() => {})
+              await waitStable(page, 250)
+              continue
+            }
+            await page.keyboard.press('Escape')
+            await waitStable(page)
+            await flowTypePromptAndSubmit(page, promptText, { expectImageInPrompt: true, skipFill: true })
+            if (p < group.prompts.length - 1) {
+              const waitMs = randomDelayMs(delayMinMs, delayMaxMs)
+              stepLog(`  Waiting ${waitMs / 1000}s before next prompt`)
+              await waitInterruptible(waitMs, shouldStop)
+            }
           }
-          if (!imageAdded) {
-            stepLog(`[WARN] Step 4 unrecoverable for prompt ${p + 1}/${group.prompts.length} — skip this prompt, continue next`)
-            await page.keyboard.press('Escape').catch(() => {})
-            await waitStable(page, 250)
-            continue
-          }
-          await page.keyboard.press('Escape')
-          await waitStable(page)
-          await flowTypePromptAndSubmit(page, promptText, { expectImageInPrompt: true, skipFill: true })
-          if (p < group.prompts.length - 1) {
-            const waitMs = randomDelayMs(delayMinMs, delayMaxMs)
-            stepLog(`  Waiting ${waitMs / 1000}s before next prompt`)
-            await waitInterruptible(waitMs, shouldStop)
-          }
-        }
-      } else {
-        stepLog(`Group ${g + 1}/${groups.length}: no images, run ${group.prompts.length} prompt(s) without images`)
-        for (let p = 0; p < group.prompts.length; p++) {
-          assertNotStopped(shouldStop)
-          await flowTypePromptAndSubmit(page, group.prompts[p], { expectImageInPrompt: false })
-          if (p < group.prompts.length - 1) {
-            const waitMs = randomDelayMs(delayMinMs, delayMaxMs)
-            await waitInterruptible(waitMs, shouldStop)
+        } else {
+          stepLog(`Group ${g + 1}/${groups.length}: no images, run ${group.prompts.length} prompt(s) without images`)
+          for (let p = 0; p < group.prompts.length; p++) {
+            assertNotStopped(shouldStop)
+            await flowTypePromptAndSubmit(page, group.prompts[p], { expectImageInPrompt: false })
+            if (p < group.prompts.length - 1) {
+              const waitMs = randomDelayMs(delayMinMs, delayMaxMs)
+              await waitInterruptible(waitMs, shouldStop)
+            }
           }
         }
       }
+      stepLog('Veo3 project flow by groups done')
+    } catch (e) {
+      producerError = e
+      stepLog(`Producer flow stopped early: ${(e as Error)?.message ?? String(e)}`)
+    } finally {
+      producerFinished = true
     }
-    stepLog('Veo3 project flow by groups done')
     if (downloadPromise) {
+      const producerErrMsg = producerError instanceof Error ? producerError.message : String(producerError ?? '')
+      if (producerError && /VEO3_QUEUE_STOPPED_BY_USER/i.test(producerErrMsg)) {
+        throw producerError
+      }
       stepLog('Waiting for download tracker to finish…')
-      return downloadPromise
+      const downloaded = await downloadPromise
+      if (producerError) throw producerError
+      return downloaded
     }
+    if (producerError) throw producerError
     return []
   })
 }
