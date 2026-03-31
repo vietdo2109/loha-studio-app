@@ -63,6 +63,7 @@ export default function App() {
   const [isStarting,      setIsStarting]      = useState(false)
   const [sessionSummary,  setSessionSummary]  = useState<{ total: number; success: number; failed: number } | null>(null)
   const [isStartingVeo3,  setIsStartingVeo3]  = useState(false)
+  const [enableHumanBehavior, setEnableHumanBehavior] = useState(true)
   const [showVeo3Modal, setShowVeo3Modal] = useState(false)
   const [showGrokModal, setShowGrokModal] = useState(false)
   const [veo3ProfilesList, setVeo3ProfilesList] = useState<{ profileId: string; profileDir: string; loggedIn: boolean; email?: string }[]>([])
@@ -467,7 +468,7 @@ export default function App() {
       seenVeo3BlockedProfilesRef.current.add(profileId)
       const message =
         payload?.message ??
-        `Profile ${profileId} bị server block 403. Đã dừng tạo video mới trên profile này; tool vẫn tiếp tục tải các video đã hoàn thành.`
+        'Google từ chối request (HTTP 403) hoặc reCAPTCHA: profile đang bị đánh giá là bot / hành vi tự động. Hãy dừng hẳn automation và cho tài khoản nghỉ nhiều giờ hoặc vài ngày trước khi thử lại; tiếp tục chạy thường làm tình trạng tệ hơn. Tool không gán thêm job tạo mới cho profile này; có thể vẫn tải nốt video đã xong.'
       setVeo3ProfileBlockedNotice({ profileId, message })
       setErrors(prev => (prev.includes(message) ? prev : [...prev, message]))
     }
@@ -711,12 +712,12 @@ export default function App() {
     }
     setIsStartingVeo3(true)
     sessionJobFailCountRef.current = 0
-    const res = await api.veo3RunQueue(veo3Queue)
+    const res = await api.veo3RunQueue(veo3Queue, { enableHumanBehavior })
     if (!res?.success) {
       setErrors(prev => [...prev, res?.error ?? 'Chạy queue thất bại.'])
       setIsStartingVeo3(false)
     }
-  }, [veo3Queue, veo3ProfilesList, allowVeo])
+  }, [veo3Queue, veo3ProfilesList, allowVeo, enableHumanBehavior])
 
   const handleVeo3Stop = useCallback(async () => {
     const api = (window as any).electronAPI
@@ -1314,13 +1315,26 @@ export default function App() {
           )}
           {platform === "Veo3" && activePanel === "projects" && (
             <>
+              <label
+                style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11, color: "var(--text2)", cursor: "pointer", userSelect: "none" }}
+                title="Bật giả lập hành vi người dùng thật: tự động refresh cookies, mở tab search ngẫu nhiên trong lúc chạy queue. Tắt nếu gặp lỗi timeout/freeze."
+              >
+                <input
+                  type="checkbox"
+                  checked={enableHumanBehavior}
+                  onChange={(e) => setEnableHumanBehavior(e.target.checked)}
+                  disabled={isStartingVeo3}
+                  style={{ width: 14, height: 14, cursor: "pointer", marginRight: 4, marginLeft: 10 }}
+                />
+                thêm hành vi người dùng thật
+              </label>
               <Btn
                 variant="primary"
                 disabled={pendingVeo3Count === 0 || veo3ProfilesList.filter(p => p.loggedIn).length === 0 || isStartingVeo3}
                 onClick={handleVeo3Start}
                 size="lg"
                 style={{ minWidth: 100 }}
-                title="Chạy queue: 1 profile = 1 dự án, mỗi 30s chạy prompt tiếp theo. Lưu ý: Không thu nhỏ cửa sổ hoặc tắt màn hình khi đang chạy — automation cần cửa sổ hiển thị để thao tác."
+                title="Chạy queue: 1 profile = 1 dự án, mỗi 18-32s chạy prompt tiếp theo. Lưu ý: Không thu nhỏ cửa sổ hoặc tắt màn hình khi đang chạy — automation cần cửa sổ hiển thị để thao tác."
               >
                 {isStartingVeo3 ? <><Icon.Spin /> Đang chạy...</> : <><Icon.Play /> Start</>}
               </Btn>

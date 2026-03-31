@@ -8,6 +8,10 @@ import { logAsciiVi } from './logAsciiVi'
 
 export type FlowLogKind = 'action' | 'detail' | 'info' | 'warn' | 'error' | 'ok'
 
+/** Thông báo cố định khi Google trả 403 / chống bot (reCAPTCHA) — dùng chung log + UI + humanize. */
+export const FLOW_VEO3_SERVER_BLOCK_HINT_VI =
+  'Google từ chối request (HTTP 403) hoặc reCAPTCHA: profile đang bị đánh giá là bot / hành vi tự động. Hãy dừng hẳn automation và cho tài khoản nghỉ nhiều giờ hoặc vài ngày trước khi thử lại; tiếp tục chạy thường làm tình trạng tệ hơn.'
+
 export interface FlowLogPayload {
   kind: FlowLogKind
   /** Dòng chính (ưu tiên tiếng Việt, dễ hiểu) */
@@ -76,6 +80,12 @@ export function humanizePlaywrightError(err: unknown): { user: string; tech: str
   const tech = err instanceof Error ? err.message : String(err)
   const t = tech.toLowerCase()
 
+  if (/veo3_profile_blocked_403/i.test(tech)) {
+    return {
+      user: FLOW_VEO3_SERVER_BLOCK_HINT_VI,
+      tech,
+    }
+  }
   if (/target page.*closed|browser has been closed|context.*closed|page.*closed/i.test(tech)) {
     return {
       user: 'Cửa sổ trình duyệt đã đóng hoặc mất kết nối. Hãy mở lại profile Veo3 và chạy lại.',
@@ -137,6 +147,9 @@ export function describeFlowStepFromError(err: unknown): string {
   }
   if (/download|1080p|4k|720p|upscale|edit tab|flowWaitAndDownload/i.test(s)) {
     return 'Bước tải video / độ phân giải'
+  }
+  if (/veo3_profile_blocked_403/i.test(s)) {
+    return 'Chặn server (403 / reCAPTCHA) — dừng tạo video, nghỉ tài khoản'
   }
   return 'Trong quá trình chạy tự động trên Google Flow'
 }

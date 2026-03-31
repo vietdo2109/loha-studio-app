@@ -14,12 +14,14 @@ import {
   parsedListToVerboseLayoutString,
   type ParsedGeneratedList,
 } from './veo3GeneratedListParser'
-import { flowEmit, withFlowAction } from './flowActionLog'
+import { flowEmit, withFlowAction, FLOW_VEO3_SERVER_BLOCK_HINT_VI } from './flowActionLog'
 import { logAsciiVi } from './logAsciiVi'
 import { installFlowUserInterferenceMonitor } from './userInterferenceMonitor'
 import { emitBlockingUiDismissed } from './blockingUiNotify'
 
 const DOM_STABLE_MS = 800
+/** Click/focus ô prompt Slate — đợi lâu hơn khi tracker tải video / tab edit chen ngang. */
+const PROMPT_INPUT_ACTION_TIMEOUT_MS = 50000
 const VEO3_MINIMAL_ACTION_LOG = process.env.VEO3_VERBOSE_LOG !== '1'
 const flowLogTagStore = new AsyncLocalStorage<string>()
 
@@ -302,6 +304,11 @@ function isPromptInputBusy(page: Page): boolean {
 
 function isImageImportBusy(page: Page): boolean {
   return (imageImportBusyCounter.get(page) ?? 0) > 0
+}
+
+/** True when the flow page is doing critical work (upload, prompt input, focus lock). */
+export function isFlowPageBusy(page: Page): boolean {
+  return isImageImportBusy(page) || isPromptInputBusy(page) || focusLockByPage.has(page)
 }
 
 async function withPromptInputBusy<T>(page: Page, fn: () => Promise<T>): Promise<T> {
@@ -928,6 +935,14 @@ export async function flowUploadImages(page: Page, imagePaths: string[], mode: V
   for (let i = 0; i < neededForAllJobs; i++) {
     if (resultBySlot[i]) orderedNames.push(resultBySlot[i] as string)
   }
+  // Một file tải lên (vd. 2.png) có thể được map vào slot 1 trong resultBySlot → vòng trên không lấy được [0].
+  if (orderedNames.length < neededForFirstJob && neededForAllJobs === 1) {
+    const fromAny = resultBySlot.find((x): x is string => typeof x === 'string' && x.length > 0)
+    if (fromAny) {
+      orderedNames.length = 0
+      orderedNames.push(fromAny)
+    }
+  }
   if (orderedNames.length < neededForFirstJob && uploadLog.length > 0) {
     for (const entry of uploadLog) {
       if (entry.response?.body != null && typeof entry.response.body === 'object') {
@@ -985,13 +1000,31 @@ export async function flowUploadImages(page: Page, imagePaths: string[], mode: V
       const dialog = page.locator('[role="dialog"]').first()
       await dialog.waitFor({ state: 'visible', timeout: 8000 }).catch(() => null)
       const rows = dialog.locator('[data-testid="virtuoso-item-list"] [data-index]')
+      const mediaKeyFromRow = async (rowLocator: Locator): Promise<string | null> => {
+        const src = await rowLocator
+          .locator('img[src*="getMediaUrlRedirect"][src*="name="]')
+          .first()
+          .getAttribute('src')
+          .catch(() => null)
+        const raw = src?.match(/name=([^&]+)/)?.[1]
+        if (!raw) return null
+        try {
+          return decodeURIComponent(raw)
+        } catch {
+          return raw
+        }
+      }
+      const orderedNamesFromVerifiedLabels: string[] = []
+      let allLabelsVerified = true
       for (const label of expectedLabels) {
         let found = false
+        let mediaKey: string | null = null
         const labelDeadline = Date.now() + 12000
         while (Date.now() < labelDeadline) {
           const rowByLabel = rows.filter({ hasText: label }).first()
           if ((await rowByLabel.count().catch(() => 0)) > 0) {
             found = true
+            mediaKey = await mediaKeyFromRow(rowByLabel)
             break
           }
           const scroller = dialog.locator('[data-virtuoso-scroller="true"]').first()
@@ -1000,13 +1033,30 @@ export async function flowUploadImages(page: Page, imagePaths: string[], mode: V
           await page.waitForTimeout(300)
         }
         if (!found) {
+          allLabelsVerified = false
           stepLog(`[WARN] Step 3 verify: uploaded image label "${label}" not visible in dialog on this machine; continue to Step 4 retry-check`)
           await captureImageImportTrace(page, 'upload-verify-label-miss', { label })
           // Do not hard-stop here: Step 4 has stronger slot-level retry+verify and remains hard-stop authority.
           continue
         }
+        if (mediaKey) orderedNamesFromVerifiedLabels.push(mediaKey)
+        else {
+          allLabelsVerified = false
+          stepLog(`[WARN] Step 3 verify: row for "${label}" has no media name in img src`)
+        }
       }
       stepLog(`Step 3: Verified uploaded image label(s) in dialog: ${expectedLabels.join(', ')}`)
+      if (
+        allLabelsVerified &&
+        orderedNamesFromVerifiedLabels.length === expectedLabels.length &&
+        orderedNamesFromVerifiedLabels.every(Boolean)
+      ) {
+        orderedNames.length = 0
+        orderedNames.push(...orderedNamesFromVerifiedLabels)
+        stepLog(
+          'Step 3: Đã gắn media id (server) đúng theo tên file đã tải — tránh lấy nhầm ô đầu danh sách Virtuoso'
+        )
+      }
     }
   }
 
@@ -1329,17 +1379,23 @@ export async function flowAddImagesToPromptForScriptJob(
 
 /** Add image(s) to prompt from ordered names.
  * Current production behavior: use only slot 0 (Bắt đầu) for stability across machines.
+ * @param promptIndexInGroup — với nhiều ảnh trong nhóm + nhiều prompt: prompt p dùng ảnh min(p, len-1) (vd. 2 prompt 2 ảnh → lượt 1 ảnh 1, lượt 2 ảnh 2).
  */
 export async function flowAddImagesToPromptFromOrderedNames(
   page: Page,
   orderedNames: string[],
-  twoSlots: boolean = true
+  twoSlots: boolean = true,
+  promptIndexInGroup: number = 0
 ): Promise<boolean> {
   if (orderedNames.length === 0) return false
+  const primaryIdx = Math.min(Math.max(0, promptIndexInGroup), orderedNames.length - 1)
+  if (primaryIdx > 0 || orderedNames.length > 1) {
+    stepLog(`Step 4: Theo lượt prompt — chọn media ${primaryIdx + 1}/${orderedNames.length} trong nhóm (slot khung Bắt đầu)`)
+  }
   try {
-    await flowAddImageToPromptByMediaName(page, orderedNames[0], 0)
+    await flowAddImageToPromptByMediaName(page, orderedNames[primaryIdx], 0)
     if (twoSlots) {
-      const nameForSlot1 = orderedNames.length >= 2 ? orderedNames[1] : orderedNames[0]
+      const nameForSlot1 = orderedNames.length >= 2 ? orderedNames[1] : orderedNames[primaryIdx]
       await flowAddImageToPromptByMediaName(page, nameForSlot1, 1)
     }
     return true
@@ -1353,51 +1409,66 @@ export async function flowAddImagesToPromptFromOrderedNames(
   }
 }
 
+function emitPromptInputFailureHint(err: unknown): void {
+  const msg = err instanceof Error ? err.message : String(err)
+  // stepLog [WARN] → flowEmit('warn', …) hiển thị trong tool
+  if (/timeout|visible.*stable|stable|intercept/i.test(msg)) {
+    stepLog(
+      `[WARN] Không nhập được prompt, vui lòng kiểm tra profile — ${logAsciiVi(msg.slice(0, 240))}`
+    )
+  }
+}
+
 async function flowPreparePromptText(page: Page, prompt: string): Promise<void> {
   await withPromptInputBusy(page, async () => {
     await bringProjectPageToFront(page)
     const input = page.locator(S.promptInput).first()
-    await withFlowAction(
-      'Focus ô nhập prompt và xóa nội dung cũ',
-      'Click ô prompt → Ctrl+A → Delete',
-      async () => {
-        await input.waitFor({ state: 'visible', timeout: 10000 })
-        await input.click()
-        await waitStable(page, 300)
-        await page.keyboard.press('Control+A')
-        await page.keyboard.press('Delete')
-      }
-    )
-    await withFlowAction(
-      'Điền prompt (clipboard Ctrl+V hoặc gõ từng phần)',
-      prompt.length > 200 ? `Nội dung (${prompt.length} ký tự): ${prompt.slice(0, 120)}…` : `Nội dung: ${prompt}`,
-      async () => {
-        if (prompt.length > 0) {
-          let pasted = false
-          try {
-            await page.evaluate((text: string) => navigator.clipboard.writeText(text), prompt)
-            await page.keyboard.press('Control+V')
-            pasted = true
-          } catch {
-            /* clipboard not available */
-          }
-          if (!pasted) {
+    try {
+      await withFlowAction(
+        'Focus ô nhập prompt và xóa nội dung cũ',
+        'Click ô prompt → Ctrl+A → Delete',
+        async () => {
+          await input.waitFor({ state: 'visible', timeout: PROMPT_INPUT_ACTION_TIMEOUT_MS })
+          await input.click({ timeout: PROMPT_INPUT_ACTION_TIMEOUT_MS })
+          await waitStable(page, 300)
+          await page.keyboard.press('Control+A')
+          await page.keyboard.press('Delete')
+        }
+      )
+      await withFlowAction(
+        'Điền prompt (clipboard Ctrl+V hoặc gõ từng phần)',
+        prompt.length > 200 ? `Nội dung (${prompt.length} ký tự): ${prompt.slice(0, 120)}…` : `Nội dung: ${prompt}`,
+        async () => {
+          if (prompt.length > 0) {
+            let pasted = false
             try {
-              const { clipboard } = require('electron')
-              clipboard.writeText(prompt)
+              await page.evaluate((text: string) => navigator.clipboard.writeText(text), prompt)
               await page.keyboard.press('Control+V')
               pasted = true
             } catch {
-              /* not in Electron */
+              /* clipboard not available */
+            }
+            if (!pasted) {
+              try {
+                const { clipboard } = require('electron')
+                clipboard.writeText(prompt)
+                await page.keyboard.press('Control+V')
+                pasted = true
+              } catch {
+                /* not in Electron */
+              }
+            }
+            if (!pasted) {
+              await page.keyboard.insertText(prompt)
             }
           }
-          if (!pasted) {
-            await page.keyboard.insertText(prompt)
-          }
+          await waitStable(page, 300)
         }
-        await waitStable(page, 300)
-      }
-    )
+      )
+    } catch (e) {
+      emitPromptInputFailureHint(e)
+      throw e
+    }
   })
 }
 
@@ -1408,26 +1479,40 @@ export async function flowTypePromptAndSubmit(
   opts: { expectImageInPrompt?: boolean; skipFill?: boolean } = {}
 ): Promise<void> {
   const detectImmediateGeneration403 = async (): Promise<void> => {
-    const res = await page
-      .waitForResponse(
-        (r) => {
-          const url = r.url()
-          if (!/googleapis\.com\/v1\/video:/i.test(url)) return false
-          if (r.request().method() !== 'POST') return false
-          return /video:/i.test(url)
-        },
-        { timeout: 6000 }
+    const isGenerationSubmitUrl = (url: string): boolean => {
+      const u = url.toLowerCase()
+      return (
+        /googleapis\.com\/v1\/video:/i.test(u) &&
+        !/batchcheck/i.test(u) &&
+        !/status/i.test(u)
       )
-      .catch(() => null)
-    if (!res) return
-    if (res.status() !== 403) return
-    let bodySnippet = ''
-    try {
-      bodySnippet = (await res.text()).slice(0, 600)
-    } catch {
-      /* ignore body parse failures */
     }
-    throw new Error(`VEO3_PROFILE_BLOCKED_403: submit request rejected (${res.url()}) ${bodySnippet}`)
+    const deadline = Date.now() + 25_000
+    while (Date.now() < deadline) {
+      const remaining = Math.max(1000, deadline - Date.now())
+      const res = await page
+        .waitForResponse(
+          (r) => {
+            if (r.request().method() !== 'POST') return false
+            const url = r.url()
+            return isGenerationSubmitUrl(url) || isVeo3ServerBlock403Url(url)
+          },
+          { timeout: remaining }
+        )
+        .catch(() => null)
+      if (!res) return
+      if (res.status() === 403) {
+        let bodySnippet = ''
+        try {
+          bodySnippet = (await res.text()).slice(0, 600)
+        } catch {
+          /* ignore body parse failures */
+        }
+        stepLog(`[WARN] ${FLOW_VEO3_SERVER_BLOCK_HINT_VI}`)
+        throw new Error(`VEO3_PROFILE_BLOCKED_403: submit request rejected (${res.url()}) ${bodySnippet}`)
+      }
+      if (isGenerationSubmitUrl(res.url())) return
+    }
   }
 
   await withPromptInputBusy(page, async () => {
@@ -1655,8 +1740,10 @@ export async function flowDownloadGeneratedVideoAtTile(
 const DOWNLOAD_EVENT_TIMEOUT_MS = 120000
 /** Delay between triggering each 1080p (after waiting for download event). */
 const DOWNLOAD_BATCH_CLICK_GAP_MS = 100
-/** Ordered mode strategy: warm-up pass (discard) then final save pass. */
-const ORDERED_TWO_PASS_DOWNLOAD = true
+/**
+ * Tắt two-pass (mở tab warm-up rồi mở lại tab final): giảm chen ngang UI khi producer vẫn chạy, tránh lỗi ổn định.
+ */
+const ORDERED_TWO_PASS_DOWNLOAD = false
 /** Edit-page Download button can stay non-interactable while backend/upscale state settles. */
 const EDIT_PAGE_DOWNLOAD_CLICK_TIMEOUT_MS = 120000
 
@@ -2162,6 +2249,8 @@ export async function flowWaitAndDownloadAllGeneratedVideos1080pUsingParser(
     unordered?: boolean
     downloadResolution?: Veo3DownloadResolution
     isProducerFinished?: () => boolean
+    /** Returns non-null Error when a 403/block has been detected; tracker should abort immediately. */
+    getBlockedError?: () => Error | null
   } = {}
 ): Promise<string[]> {
   const unordered = opts.unordered === true
@@ -2291,6 +2380,11 @@ export async function flowWaitAndDownloadAllGeneratedVideos1080pUsingParser(
 
   let pollCount = 0
   while (Date.now() < deadline) {
+    const blockedErr = opts.getBlockedError?.()
+    if (blockedErr) {
+      stepLog(`[TRACKER] Aborting — profile blocked by server (403): ${blockedErr.message}`)
+      throw blockedErr
+    }
     const data = await getParsedGeneratedListWithFallback(page)
     lastData = data
     if (data.totalVideoSlots > 0) hasEverSeenVideoSlot = true
@@ -2606,6 +2700,35 @@ function logFinalSlotStatus(
     stepLog(`Final slot status:\n${lines.join('\n')}`)
   }
 }
+
+function isVeo3ServerBlock403Url(url: string): boolean {
+  const u = url.toLowerCase()
+  if (u.includes('recaptcha') || u.includes('enterprise.googleapis.com')) return true
+  if (u.includes('aisandbox-pa.googleapis.com')) return true
+  if (!u.includes('googleapis.com')) return false
+  return /\/v1\/.*video|generativelanguage|aiplatform|batch|text:|flow\.googleapis|mediaplatform/i.test(u)
+}
+
+/** Bắt 403 trên API tạo video / reCAPTCHA để dừng producer ngay, không tiếp tục submit khi đã bị chặn. */
+function attachVeo3Server403Probe(page: Page): { throwIfBlocked: () => void; getBlockedError: () => Error | null; dispose: () => void } {
+  let blocked: Error | null = null
+  const onResponse = (res: Response) => {
+    if (blocked) return
+    if (res.status() !== 403) return
+    if (!isVeo3ServerBlock403Url(res.url())) return
+    blocked = new Error(`VEO3_PROFILE_BLOCKED_403: HTTP 403 ${res.url()}`)
+    stepLog(`[WARN] ${FLOW_VEO3_SERVER_BLOCK_HINT_VI}`)
+  }
+  page.on('response', onResponse)
+  return {
+    throwIfBlocked: () => {
+      if (blocked) throw blocked
+    },
+    getBlockedError: () => blocked,
+    dispose: () => page.off('response', onResponse),
+  }
+}
+
 /**
  * Full flow: new project → Video mode → upload images → (optional) add to prompt → (optional) type prompt → submit.
  * When opts.debugUploadOnly is true: only upload, wait for all to finish, then return uploadLog (no add-to-prompt, no submit).
@@ -2619,41 +2742,47 @@ export async function runVeo3CreateVideoFlow(
   return await runWithFlowLogTag(opts.logTag, async () => {
     resetVeo3TraceLogs()
     await installFlowUserInterferenceMonitor(page)
-    stepLog('——— Veo3 create-video flow start ———')
-    await flowClickNewProject(page)
-    await flowSetVideoMode(page, {
-      videoMode: opts.videoMode ?? 'frames',
-      landscape: opts.landscape ?? false,
-      multiplier: opts.multiplier ?? 2,
-      ...opts,
-    })
+    const server403Probe = attachVeo3Server403Probe(page)
+    try {
+      stepLog('——— Veo3 create-video flow start ———')
+      server403Probe.throwIfBlocked()
+      await flowClickNewProject(page)
+      await flowSetVideoMode(page, {
+        videoMode: opts.videoMode ?? 'frames',
+        landscape: opts.landscape ?? false,
+        multiplier: opts.multiplier ?? 2,
+        ...opts,
+      })
 
-    if (imagePaths.length > 0) {
-      const { orderedNames, uploadLog } = await flowUploadImages(page, imagePaths, opts.videoMode ?? 'frames')
-      if (opts.debugUploadOnly) {
-        stepLog('——— Veo3 debug upload only: skipping add-to-prompt and submit ———')
-        return { uploadLog }
+      if (imagePaths.length > 0) {
+        const { orderedNames, uploadLog } = await flowUploadImages(page, imagePaths, opts.videoMode ?? 'frames')
+        if (opts.debugUploadOnly) {
+          stepLog('——— Veo3 debug upload only: skipping add-to-prompt and submit ———')
+          return { uploadLog }
+        }
+        await flowPreparePromptText(page, prompt)
+        const tiles = page.locator(S.uploadedTile).filter({ has: page.locator('img') })
+        const count = await tiles.count()
+        stepLog(`Adding ${Math.min(opts.videoMode === 'ingredients' ? 3 : 2, imagePaths.length, count)} image(s) to prompt${orderedNames.length > 0 ? ' (by upload order)' : ''}`)
+        await flowAddImagesToPrompt(page, opts.videoMode ?? 'frames', imagePaths, count, orderedNames)
+        await flowTypePromptAndSubmit(page, prompt, { expectImageInPrompt: true, skipFill: true })
+        stepLog('——— Veo3 create-video flow done ———')
+        return
+      } else if (opts.debugUploadOnly) {
+        return { uploadLog: [] }
       }
-      await flowPreparePromptText(page, prompt)
-      const tiles = page.locator(S.uploadedTile).filter({ has: page.locator('img') })
-      const count = await tiles.count()
-      stepLog(`Adding ${Math.min(opts.videoMode === 'ingredients' ? 3 : 2, imagePaths.length, count)} image(s) to prompt${orderedNames.length > 0 ? ' (by upload order)' : ''}`)
-      await flowAddImagesToPrompt(page, opts.videoMode ?? 'frames', imagePaths, count, orderedNames)
-      await flowTypePromptAndSubmit(page, prompt, { expectImageInPrompt: true, skipFill: true })
-      stepLog('——— Veo3 create-video flow done ———')
-      return
-    } else if (opts.debugUploadOnly) {
-      return { uploadLog: [] }
-    }
 
-    await flowTypePromptAndSubmit(page, prompt, { expectImageInPrompt: false })
-    stepLog('——— Veo3 create-video flow done ———')
+      await flowTypePromptAndSubmit(page, prompt, { expectImageInPrompt: false })
+      stepLog('——— Veo3 create-video flow done ———')
+    } finally {
+      server403Probe.dispose()
+    }
   })
 }
 
-const DELAY_BETWEEN_PROMPTS_MS = 20 * 1000
-const DELAY_MIN_MS = 15 * 1000
-const DELAY_MAX_MS = 19 * 1000
+const DELAY_BETWEEN_PROMPTS_MS = 25 * 1000
+const DELAY_MIN_MS = 18 * 1000
+const DELAY_MAX_MS = 32 * 1000
 
 function randomDelayMs(minMs: number = DELAY_MIN_MS, maxMs: number = DELAY_MAX_MS): number {
   return Math.floor(minMs + Math.random() * (maxMs - minMs + 1))
@@ -2722,6 +2851,7 @@ export async function runVeo3ProjectFlowByGroups(
     }
 
     let producerFinished = false
+    const server403Probe = attachVeo3Server403Probe(page)
     let downloadPromise: Promise<string[]> | null = null
     if (downloadOpts) {
       stepLog('Starting download tracker in parallel (non-blocking with submissions)')
@@ -2735,6 +2865,7 @@ export async function runVeo3ProjectFlowByGroups(
           unordered: downloadOpts.unordered,
           downloadResolution: downloadOpts.downloadResolution ?? opts.downloadResolution ?? '1080p',
           isProducerFinished: () => producerFinished,
+          getBlockedError: () => server403Probe.getBlockedError(),
         }
       )
     }
@@ -2742,6 +2873,7 @@ export async function runVeo3ProjectFlowByGroups(
     try {
       for (let g = 0; g < groups.length; g++) {
         assertNotStopped(shouldStop)
+        server403Probe.throwIfBlocked()
         const group = groups[g]
         const validPaths = group.imagePaths.filter(p => p && fs.existsSync(p))
         if (validPaths.length > 0) {
@@ -2752,16 +2884,17 @@ export async function runVeo3ProjectFlowByGroups(
           await waitStable(page, 800)
           for (let p = 0; p < group.prompts.length; p++) {
             assertNotStopped(shouldStop)
+            server403Probe.throwIfBlocked()
             stepLog(`  Prompt ${p + 1}/${group.prompts.length}: add images, type, submit`)
             const twoSlots = false
             const promptText = group.prompts[p]
             await flowPreparePromptText(page, promptText)
-            let imageAdded = await flowAddImagesToPromptFromOrderedNames(page, imageKeys, twoSlots)
+            let imageAdded = await flowAddImagesToPromptFromOrderedNames(page, imageKeys, twoSlots, p)
             if (!imageAdded) {
               stepLog('[WARN] Step 4 failed on first try — reopen upload dialog and retry once')
               const retryUpload = await flowUploadImages(page, validPaths, mode, { leaveDialogOpen: true })
               imageKeys = retryUpload.orderedNames.length > 0 ? retryUpload.orderedNames : localFileNames
-              imageAdded = await flowAddImagesToPromptFromOrderedNames(page, imageKeys, twoSlots)
+              imageAdded = await flowAddImagesToPromptFromOrderedNames(page, imageKeys, twoSlots, p)
             }
             if (!imageAdded) {
               stepLog(`[WARN] Step 4 unrecoverable for prompt ${p + 1}/${group.prompts.length} — skip this prompt, continue next`)
@@ -2772,6 +2905,7 @@ export async function runVeo3ProjectFlowByGroups(
             await page.keyboard.press('Escape')
             await waitStable(page)
             await flowTypePromptAndSubmit(page, promptText, { expectImageInPrompt: true, skipFill: true })
+            server403Probe.throwIfBlocked()
             if (p < group.prompts.length - 1) {
               const waitMs = randomDelayMs(delayMinMs, delayMaxMs)
               stepLog(`  Waiting ${waitMs / 1000}s before next prompt`)
@@ -2782,6 +2916,7 @@ export async function runVeo3ProjectFlowByGroups(
           stepLog(`Group ${g + 1}/${groups.length}: no images, run ${group.prompts.length} prompt(s) without images`)
           for (let p = 0; p < group.prompts.length; p++) {
             assertNotStopped(shouldStop)
+            server403Probe.throwIfBlocked()
             await flowTypePromptAndSubmit(page, group.prompts[p], { expectImageInPrompt: false })
             if (p < group.prompts.length - 1) {
               const waitMs = randomDelayMs(delayMinMs, delayMaxMs)
@@ -2795,17 +2930,33 @@ export async function runVeo3ProjectFlowByGroups(
       producerError = e
       stepLog(`Producer flow stopped early: ${(e as Error)?.message ?? String(e)}`)
     } finally {
+      server403Probe.dispose()
       producerFinished = true
     }
     if (downloadPromise) {
       const producerErrMsg = producerError instanceof Error ? producerError.message : String(producerError ?? '')
-      if (producerError && /VEO3_QUEUE_STOPPED_BY_USER/i.test(producerErrMsg)) {
+      const isStoppedByUser = producerError && /VEO3_QUEUE_STOPPED_BY_USER/i.test(producerErrMsg)
+      const isProducerBlocked = producerError && /VEO3_PROFILE_BLOCKED_403/i.test(producerErrMsg)
+      if (isStoppedByUser || isProducerBlocked) {
+        stepLog(isProducerBlocked
+          ? 'Producer blocked by 403 — aborting download tracker'
+          : 'Queue stopped by user — aborting download tracker')
+        await downloadPromise.catch(() => {})
         throw producerError
       }
       stepLog('Waiting for download tracker to finish…')
-      const downloaded = await downloadPromise
-      if (producerError) throw producerError
-      return downloaded
+      try {
+        const downloaded = await downloadPromise
+        if (producerError) throw producerError
+        return downloaded
+      } catch (trackerErr) {
+        const trackerMsg = trackerErr instanceof Error ? trackerErr.message : String(trackerErr)
+        if (/VEO3_PROFILE_BLOCKED_403/i.test(trackerMsg)) {
+          throw producerError ?? trackerErr
+        }
+        if (producerError) throw producerError
+        throw trackerErr
+      }
     }
     if (producerError) throw producerError
     return []
@@ -2825,47 +2976,55 @@ export async function runVeo3ProjectFlow(
   return await runWithFlowLogTag(opts.logTag, async () => {
     resetVeo3TraceLogs()
     await installFlowUserInterferenceMonitor(page)
-    const mode = opts.videoMode ?? 'frames'
-    const delayMs = opts.delayBetweenPromptsMs ?? DELAY_BETWEEN_PROMPTS_MS
-    const scriptIndexPerJob = opts.scriptIndexPerJob
-    stepLog('——— Veo3 project flow (one project, all images once) ———')
-    await flowClickNewProject(page)
-    await flowSetVideoMode(page, {
-      videoMode: mode,
-      landscape: opts.landscape ?? false,
-      multiplier: opts.multiplier ?? 2,
-      ...opts,
-    })
+    const server403Probe = attachVeo3Server403Probe(page)
+    try {
+      const mode = opts.videoMode ?? 'frames'
+      const delayMs = opts.delayBetweenPromptsMs ?? DELAY_BETWEEN_PROMPTS_MS
+      const scriptIndexPerJob = opts.scriptIndexPerJob
+      stepLog('——— Veo3 project flow (one project, all images once) ———')
+      server403Probe.throwIfBlocked()
+      await flowClickNewProject(page)
+      await flowSetVideoMode(page, {
+        videoMode: mode,
+        landscape: opts.landscape ?? false,
+        multiplier: opts.multiplier ?? 2,
+        ...opts,
+      })
 
-    if (allImagePaths.length === 0) {
+      if (allImagePaths.length === 0) {
+        for (let i = 0; i < prompts.length; i++) {
+          server403Probe.throwIfBlocked()
+          await flowTypePromptAndSubmit(page, prompts[i], { expectImageInPrompt: false })
+          if (i < prompts.length - 1) await page.waitForTimeout(delayMs)
+        }
+        stepLog('——— Veo3 project flow done ———')
+        return
+      }
+
+      const { orderedNames, uploadLog } = await flowUploadImages(page, allImagePaths, mode)
+      if (opts.debugUploadOnly) {
+        stepLog('——— Veo3 debug upload only ———')
+        return { uploadLog }
+      }
+
       for (let i = 0; i < prompts.length; i++) {
-        await flowTypePromptAndSubmit(page, prompts[i], { expectImageInPrompt: false })
-        if (i < prompts.length - 1) await page.waitForTimeout(delayMs)
+        server403Probe.throwIfBlocked()
+        stepLog(`Job ${i + 1}/${prompts.length}: add images, type prompt, submit`)
+        await flowPreparePromptText(page, prompts[i])
+        if (scriptIndexPerJob != null && scriptIndexPerJob[i] !== undefined) {
+          await flowAddImagesToPromptForScriptJob(page, orderedNames, scriptIndexPerJob[i])
+        } else {
+          await flowAddImagesToPromptForJob(page, mode, orderedNames, i)
+        }
+        await flowTypePromptAndSubmit(page, prompts[i], { expectImageInPrompt: true, skipFill: true })
+        if (i < prompts.length - 1) {
+          stepLog(`Waiting ${delayMs / 1000}s before next prompt…`)
+          await page.waitForTimeout(delayMs)
+        }
       }
       stepLog('——— Veo3 project flow done ———')
-      return
+    } finally {
+      server403Probe.dispose()
     }
-
-    const { orderedNames, uploadLog } = await flowUploadImages(page, allImagePaths, mode)
-    if (opts.debugUploadOnly) {
-      stepLog('——— Veo3 debug upload only ———')
-      return { uploadLog }
-    }
-
-    for (let i = 0; i < prompts.length; i++) {
-      stepLog(`Job ${i + 1}/${prompts.length}: add images, type prompt, submit`)
-      await flowPreparePromptText(page, prompts[i])
-      if (scriptIndexPerJob != null && scriptIndexPerJob[i] !== undefined) {
-        await flowAddImagesToPromptForScriptJob(page, orderedNames, scriptIndexPerJob[i])
-      } else {
-        await flowAddImagesToPromptForJob(page, mode, orderedNames, i)
-      }
-      await flowTypePromptAndSubmit(page, prompts[i], { expectImageInPrompt: true, skipFill: true })
-      if (i < prompts.length - 1) {
-        stepLog(`Waiting ${delayMs / 1000}s before next prompt…`)
-        await page.waitForTimeout(delayMs)
-      }
-    }
-    stepLog('——— Veo3 project flow done ———')
   })
 }

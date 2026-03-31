@@ -41,11 +41,13 @@ import {
   formatPayloadForFile,
   humanizePlaywrightError,
   describeFlowStepFromError,
+  FLOW_VEO3_SERVER_BLOCK_HINT_VI,
   type FlowLogPayload,
 } from '../automation/flowActionLog'
 import { setBlockingUiNotify } from '../automation/blockingUiNotify'
-import { runVeo3CreateVideoFlow, runVeo3ProjectFlow, runVeo3ProjectFlowByGroups } from '../automation/veo3Flow'
+import { runVeo3CreateVideoFlow, runVeo3ProjectFlow, runVeo3ProjectFlowByGroups, isFlowPageBusy } from '../automation/veo3Flow'
 import { VEO3_SELECTORS as VEO3_SEL } from '../automation/veo3Selectors'
+import { warmProfile, refreshProfileCookies, startHumanBehaviorLoop, type WarmingProgress, type HumanBehaviorHandle } from '../automation/profileWarming'
 
 // ─── Window ───────────────────────────────────────────────────────────────────
 
@@ -1364,7 +1366,7 @@ function updateStableVeo3ProfileStatus(
     changed = true
   }
 
-  const emailChanged = next.stableLoggedIn && email && email !== next.lastEmail
+  const emailChanged = !!(next.stableLoggedIn && email && email !== next.lastEmail)
   if (emailChanged) next.lastEmail = email
   if (!next.stableLoggedIn) next.lastEmail = undefined
   veo3LoginStability.set(profileId, next)
@@ -1539,21 +1541,39 @@ function getVeo3ProfileDirById(profileId: string): string {
   return path.join(VEO3_PROFILES_DIR, profileId)
 }
 
-function readVeo3Status(profileDir: string): { loggedIn: boolean; email?: string } | null {
+function readVeo3Status(profileDir: string): { loggedIn: boolean; email?: string; lastWarmedAt?: number; warmed?: boolean } | null {
   const fp = path.join(profileDir, VEO3_STATUS_FILE)
   if (!fs.existsSync(fp)) return null
   try {
     const j = JSON.parse(fs.readFileSync(fp, 'utf-8'))
-    return { loggedIn: !!j.loggedIn, email: j.email }
+    return { loggedIn: !!j.loggedIn, email: j.email, lastWarmedAt: j.lastWarmedAt, warmed: j.warmed }
   } catch {
     return null
   }
 }
 
-function writeVeo3Status(profileDir: string, loggedIn: boolean, email?: string): void {
+function writeVeo3Status(profileDir: string, loggedIn: boolean, email?: string, warmingFields?: { lastWarmedAt?: number; warmed?: boolean }): void {
   const fp = path.join(profileDir, VEO3_STATUS_FILE)
   fs.mkdirSync(profileDir, { recursive: true })
-  fs.writeFileSync(fp, JSON.stringify({ loggedIn, ...(email != null && { email }) }), 'utf-8')
+  const existing = readVeo3Status(profileDir) ?? {}
+  const merged = {
+    ...existing,
+    loggedIn,
+    ...(email != null && { email }),
+    ...(warmingFields?.lastWarmedAt != null && { lastWarmedAt: warmingFields.lastWarmedAt }),
+    ...(warmingFields?.warmed != null && { warmed: warmingFields.warmed }),
+  }
+  fs.writeFileSync(fp, JSON.stringify(merged), 'utf-8')
+}
+
+const WARMING_REFRESH_INTERVAL_MS = 24 * 60 * 60 * 1000
+let veo3WarmingInProgress = new Set<string>()
+let veo3HumanBehaviorHandles = new Map<string, HumanBehaviorHandle>()
+
+function isProfileWarmingStale(profileDir: string): boolean {
+  const status = readVeo3Status(profileDir)
+  if (!status?.warmed || !status.lastWarmedAt) return true
+  return Date.now() - status.lastWarmedAt > WARMING_REFRESH_INTERVAL_MS
 }
 
 ipcMain.handle('veo3-list-profiles', async () => {
@@ -1574,7 +1594,15 @@ ipcMain.handle('veo3-list-profiles', async () => {
     } catch {
       runtimeReady = false
     }
-    return { profileId, profileDir, loggedIn: runtimeReady, email: status?.email }
+    return {
+      profileId,
+      profileDir,
+      loggedIn: runtimeReady,
+      email: status?.email,
+      warmed: status?.warmed ?? false,
+      lastWarmedAt: status?.lastWarmedAt,
+      stale: isProfileWarmingStale(profileDir),
+    }
   })
   return { profiles }
 })
@@ -1761,6 +1789,95 @@ ipcMain.handle('veo3-delete-profile', async (_event, profileId: string) => {
   }
 })
 
+// ─── Profile Warming IPC handlers ────────────────────────────────────────────
+
+ipcMain.handle('veo3-warm-profile', async (_event, profileId: string) => {
+  if (!/^profile-\d{3}$/.test(profileId)) return { success: false, error: 'Profile không hợp lệ.' }
+  if (veo3WarmingInProgress.has(profileId)) return { success: false, error: 'Profile đang được warm.' }
+
+  const entry = veo3Profiles.find(v => v.profileId === profileId && v.ctx)
+  if (!entry?.ctx) return { success: false, error: 'Profile chưa mở. Mở profile trước khi warm.' }
+
+  veo3WarmingInProgress.add(profileId)
+  send('veo3-warming-status', { profileId, status: 'started', current: 0, total: 0 })
+
+  try {
+    const visited = await warmProfile(entry.ctx, (p: WarmingProgress) => {
+      send('veo3-warming-status', { profileId, status: 'progress', ...p })
+    })
+
+    const profileDir = getVeo3ProfileDirById(profileId)
+    writeVeo3Status(profileDir, entry.loggedIn ?? false, undefined, { lastWarmedAt: Date.now(), warmed: true })
+
+    send('veo3-warming-status', { profileId, status: 'done', visited })
+    appLog('info', `Veo3 profile ${profileId} warmed — visited ${visited} sites`, 'main')
+    return { success: true, visited }
+  } catch (err: any) {
+    send('veo3-warming-status', { profileId, status: 'error', error: err?.message })
+    appLog('error', `Veo3 warm profile ${profileId}: ${err?.message}`, 'main')
+    return { success: false, error: err?.message ?? 'Warming thất bại.' }
+  } finally {
+    veo3WarmingInProgress.delete(profileId)
+  }
+})
+
+ipcMain.handle('veo3-warm-all-profiles', async () => {
+  const results: { profileId: string; success: boolean; visited?: number; error?: string }[] = []
+  for (const entry of veo3Profiles) {
+    if (!entry.ctx || veo3WarmingInProgress.has(entry.profileId)) continue
+
+    veo3WarmingInProgress.add(entry.profileId)
+    send('veo3-warming-status', { profileId: entry.profileId, status: 'started', current: 0, total: 0 })
+    try {
+      const visited = await warmProfile(entry.ctx, (p: WarmingProgress) => {
+        send('veo3-warming-status', { profileId: entry.profileId, status: 'progress', ...p })
+      })
+      writeVeo3Status(entry.profileDir, entry.loggedIn ?? false, undefined, { lastWarmedAt: Date.now(), warmed: true })
+      send('veo3-warming-status', { profileId: entry.profileId, status: 'done', visited })
+      results.push({ profileId: entry.profileId, success: true, visited })
+    } catch (err: any) {
+      send('veo3-warming-status', { profileId: entry.profileId, status: 'error', error: err?.message })
+      results.push({ profileId: entry.profileId, success: false, error: err?.message })
+    } finally {
+      veo3WarmingInProgress.delete(entry.profileId)
+    }
+  }
+  return { results }
+})
+
+ipcMain.handle('veo3-get-warming-status', async (_event, profileId: string) => {
+  const profileDir = getVeo3ProfileDirById(profileId)
+  const status = readVeo3Status(profileDir)
+  return {
+    warmed: status?.warmed ?? false,
+    lastWarmedAt: status?.lastWarmedAt,
+    stale: isProfileWarmingStale(profileDir),
+    isWarming: veo3WarmingInProgress.has(profileId),
+  }
+})
+
+ipcMain.handle('veo3-refresh-stale-profiles', async () => {
+  let refreshed = 0
+  for (const entry of veo3Profiles) {
+    if (!entry.ctx) continue
+    if (!isProfileWarmingStale(entry.profileDir)) continue
+    if (veo3WarmingInProgress.has(entry.profileId)) continue
+
+    veo3WarmingInProgress.add(entry.profileId)
+    try {
+      const count = await refreshProfileCookies(entry.ctx)
+      writeVeo3Status(entry.profileDir, entry.loggedIn ?? false, undefined, { lastWarmedAt: Date.now(), warmed: true })
+      appLog('info', `Veo3 profile ${entry.profileId} cookies refreshed — ${count} sites`, 'main')
+      refreshed++
+    } catch (err: any) {
+      appLog('warn', `Veo3 refresh cookies ${entry.profileId}: ${err?.message}`, 'main')
+    } finally {
+      veo3WarmingInProgress.delete(entry.profileId)
+    }
+  }
+  return { refreshed }
+})
+
 /** Run one Veo3 job: uses first *logged-in* profile's Flow page; navigates to project list then runs create-video flow. */
 ipcMain.handle('veo3-run-job', async (_event, payload: {
   projectId?: string
@@ -1880,7 +1997,7 @@ ipcMain.handle('veo3-run-job', async (_event, payload: {
 
 const VEO3_DELAY_BETWEEN_PROMPTS_MS = 30 * 1000
 
-ipcMain.handle('veo3-run-queue', async (_event,   queue: Array<{
+ipcMain.handle('veo3-run-queue', async (_event, queue: Array<{
   id: string
   name: string
   outputDir: string
@@ -1896,7 +2013,8 @@ ipcMain.handle('veo3-run-queue', async (_event,   queue: Array<{
   imageDownloadResolution?: '1k' | '2k' | '4k'
   generationMode?: 'video' | 'image'
   imageModel?: string
-}>) => {
+}>, queueOptions?: { enableHumanBehavior?: boolean }) => {
+  const enableHumanBehavior = queueOptions?.enableHumanBehavior ?? true
   if (veo3QueueRunning) {
     return { success: false, error: 'Veo3 queue đang chạy. Dừng phiên hiện tại trước khi chạy lại.' }
   }
@@ -2077,7 +2195,10 @@ ipcMain.handle('veo3-run-queue', async (_event,   queue: Array<{
       if (/target page, context or browser has been closed|page.*closed|context.*closed/i.test(msg)) removeVeo3Entry(entry.profileId)
       if (profileBlocked) {
         appLog('warn', `Veo3 profile ${entry.profileId} appears blocked (403/recaptcha). Stop using this profile for current queue run.`, 'veo3')
-        markVeo3ProfileBlocked(entry.profileId, `Profile ${entry.profileId} bị server block 403. Đã dừng tạo video mới trên profile này; vẫn giữ profile để tải nốt video đã hoàn thành.`)
+        markVeo3ProfileBlocked(
+          entry.profileId,
+          `${FLOW_VEO3_SERVER_BLOCK_HINT_VI} (Profile ${entry.profileId}: tool không gán thêm job tạo mới; có thể vẫn tải nốt video đã hoàn thành.)`
+        )
       }
       const stepLabel = describeFlowStepFromError(err)
       const logDirErr = getLogDirectory()
@@ -2109,7 +2230,35 @@ ipcMain.handle('veo3-run-queue', async (_event,   queue: Array<{
     }
   }
 
-  appLog('info', `Veo3 queue: ${projectQueue.length} project(s), ${profiles.length} profile(s) — one project per profile, all images uploaded once, 30s between prompts`, 'main')
+  // Auto-refresh stale profile cookies before queue starts (only when human behavior enabled)
+  const behaviorHandles: HumanBehaviorHandle[] = []
+  if (enableHumanBehavior) {
+    for (const ent of profiles) {
+      const v = veo3Profiles.find(p => p.profileId === ent.profileId)
+      if (v?.ctx && isProfileWarmingStale(v.profileDir)) {
+        try {
+          appLog('info', `Veo3 auto-refreshing stale cookies for ${ent.profileId} before queue`, 'main')
+          await refreshProfileCookies(v.ctx)
+          writeVeo3Status(v.profileDir, v.loggedIn ?? false, undefined, { lastWarmedAt: Date.now(), warmed: true })
+        } catch (err: any) {
+          appLog('warn', `Veo3 auto-refresh cookies ${ent.profileId}: ${err?.message}`, 'main')
+        }
+      }
+    }
+
+    for (const ent of profiles) {
+      const v = veo3Profiles.find(p => p.profileId === ent.profileId)
+      if (v?.ctx && ent.page) {
+        const flowPage = ent.page
+        const handle = startHumanBehaviorLoop(v.ctx, flowPage, () => isFlowPageBusy(flowPage))
+        behaviorHandles.push(handle)
+        veo3HumanBehaviorHandles.set(ent.profileId, handle)
+      }
+    }
+    appLog('info', `Veo3 human behavior enabled: auto-refresh cookies + random tab simulation`, 'main')
+  }
+
+  appLog('info', `Veo3 queue: ${projectQueue.length} project(s), ${profiles.length} profile(s) — human behavior: ${enableHumanBehavior ? 'ON' : 'OFF'}`, 'main')
   let stoppedByUser = false
   await Promise.all(
     profiles.map(async (ent) => {
@@ -2130,6 +2279,11 @@ ipcMain.handle('veo3-run-queue', async (_event,   queue: Array<{
       }
     })
   )
+
+  // Stop all human behavior loops when queue ends
+  for (const handle of behaviorHandles) handle.stop()
+  for (const ent of profiles) veo3HumanBehaviorHandles.delete(ent.profileId)
+
   const totalJobs = projectsWithPending.reduce((s, p) => s + p.pendingJobs.length, 0)
   if (stoppedByUser || veo3QueueAbortRequested) {
     send('session-done', { success: false, summary: { total: totalJobs, success: 0, failed: 0 } })
@@ -2141,6 +2295,9 @@ ipcMain.handle('veo3-run-queue', async (_event,   queue: Array<{
   veo3QueueRunning = false
   return { success: true }
   } finally {
+    // Ensure all behavior loops stop even on exception
+    for (const [, handle] of veo3HumanBehaviorHandles) handle.stop()
+    veo3HumanBehaviorHandles.clear()
     veo3QueueRunning = false
   }
 })
