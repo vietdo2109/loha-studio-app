@@ -60,30 +60,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   veo3CloseAll: () => ipcRenderer.invoke('veo3-close-all'),
   veo3DeleteProfile: (profileId: string) => ipcRenderer.invoke('veo3-delete-profile', profileId),
   veo3StopQueue: () => ipcRenderer.invoke('veo3-stop-queue'),
-  veo3RunJob: (payload: { projectId?: string; jobId?: string; jobIndex?: number; debugUploadOnly?: boolean; prompt: string; imageDir: string; aiModel?: 'veo-3.1-fast' | 'veo-3.1-fast-lower-priority' | 'veo-3.1-quality'; videoMode: 'frames' | 'ingredients'; landscape: boolean; multiplier: 1 | 2 | 3 | 4 }) =>
+  veo3RunJob: (payload: { projectId?: string; jobId?: string; jobIndex?: number; debugUploadOnly?: boolean; prompt: string; imageDir: string; aiModel?: 'veo-3.1-lite' | 'veo-3.1-fast' | 'veo-3.1-fast-lower-priority' | 'veo-3.1-quality'; videoMode: 'frames' | 'ingredients'; landscape: boolean; multiplier: 1 | 2 | 3 | 4 }) =>
     ipcRenderer.invoke('veo3-run-job', payload),
-  veo3RunQueue: (queue: any[], options?: { enableHumanBehavior?: boolean }) => ipcRenderer.invoke('veo3-run-queue', queue, options),
-
-  // Profile warming
-  veo3WarmProfile: (profileId: string) => ipcRenderer.invoke('veo3-warm-profile', profileId),
-  veo3WarmAllProfiles: () => ipcRenderer.invoke('veo3-warm-all-profiles'),
-  veo3GetWarmingStatus: (profileId: string) => ipcRenderer.invoke('veo3-get-warming-status', profileId),
-  veo3RefreshStaleProfiles: () => ipcRenderer.invoke('veo3-refresh-stale-profiles'),
-  onVeo3WarmingStatus: (
-    cb: (
-      e: any,
-      d: {
-        profileId: string
-        status: 'started' | 'progress' | 'done' | 'error'
-        current?: number
-        total?: number
-        siteName?: string
-        phase?: string
-        visited?: number
-        error?: string
-      }
-    ) => void
-  ) => ipcRenderer.on('veo3-warming-status', cb),
+  veo3RunQueue: (queue: any[]) => ipcRenderer.invoke('veo3-run-queue', queue),
 
   onVeo3ProfileStatus: (cb: (e: any, d: { profileId: string; loggedIn: boolean; email?: string; error?: string }) => void) =>
     ipcRenderer.on('veo3-profile-status', cb),

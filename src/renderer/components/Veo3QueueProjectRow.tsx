@@ -13,7 +13,9 @@ export function Veo3QueueProjectRow({ qp, onToggle, onJobClick }: {
       ? '3.1 Quality'
       : qp.aiModel === 'veo-3.1-fast-lower-priority'
         ? '3.1 Fast LP'
-        : '3.1 Fast'
+        : qp.aiModel === 'veo-3.1-lite'
+          ? '3.1 Lite'
+          : '3.1 Fast'
   const total   = qp.jobs.length
   const done    = qp.jobs.filter(j => j.status === "done").length
   const running = qp.jobs.filter(j => j.status === "running").length

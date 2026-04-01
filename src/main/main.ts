@@ -45,9 +45,8 @@ import {
   type FlowLogPayload,
 } from '../automation/flowActionLog'
 import { setBlockingUiNotify } from '../automation/blockingUiNotify'
-import { runVeo3CreateVideoFlow, runVeo3ProjectFlow, runVeo3ProjectFlowByGroups, isFlowPageBusy } from '../automation/veo3Flow'
+import { runVeo3CreateVideoFlow, runVeo3ProjectFlow, runVeo3ProjectFlowByGroups } from '../automation/veo3Flow'
 import { VEO3_SELECTORS as VEO3_SEL } from '../automation/veo3Selectors'
-import { warmProfile, refreshProfileCookies, startHumanBehaviorLoop, type WarmingProgress, type HumanBehaviorHandle } from '../automation/profileWarming'
 
 // ─── Window ───────────────────────────────────────────────────────────────────
 
@@ -1541,39 +1540,32 @@ function getVeo3ProfileDirById(profileId: string): string {
   return path.join(VEO3_PROFILES_DIR, profileId)
 }
 
-function readVeo3Status(profileDir: string): { loggedIn: boolean; email?: string; lastWarmedAt?: number; warmed?: boolean } | null {
+function readVeo3Status(profileDir: string): { loggedIn: boolean; email?: string } | null {
   const fp = path.join(profileDir, VEO3_STATUS_FILE)
   if (!fs.existsSync(fp)) return null
   try {
     const j = JSON.parse(fs.readFileSync(fp, 'utf-8'))
-    return { loggedIn: !!j.loggedIn, email: j.email, lastWarmedAt: j.lastWarmedAt, warmed: j.warmed }
+    return { loggedIn: !!j.loggedIn, email: j.email }
   } catch {
     return null
   }
 }
 
-function writeVeo3Status(profileDir: string, loggedIn: boolean, email?: string, warmingFields?: { lastWarmedAt?: number; warmed?: boolean }): void {
+function writeVeo3Status(profileDir: string, loggedIn: boolean, email?: string): void {
   const fp = path.join(profileDir, VEO3_STATUS_FILE)
   fs.mkdirSync(profileDir, { recursive: true })
-  const existing = readVeo3Status(profileDir) ?? {}
-  const merged = {
-    ...existing,
-    loggedIn,
-    ...(email != null && { email }),
-    ...(warmingFields?.lastWarmedAt != null && { lastWarmedAt: warmingFields.lastWarmedAt }),
-    ...(warmingFields?.warmed != null && { warmed: warmingFields.warmed }),
+  let base: Record<string, unknown> = {}
+  if (fs.existsSync(fp)) {
+    try {
+      base = JSON.parse(fs.readFileSync(fp, 'utf-8')) as Record<string, unknown>
+    } catch {
+      base = {}
+    }
   }
+  delete base.lastWarmedAt
+  delete base.warmed
+  const merged = { ...base, loggedIn, ...(email != null && { email }) }
   fs.writeFileSync(fp, JSON.stringify(merged), 'utf-8')
-}
-
-const WARMING_REFRESH_INTERVAL_MS = 24 * 60 * 60 * 1000
-let veo3WarmingInProgress = new Set<string>()
-let veo3HumanBehaviorHandles = new Map<string, HumanBehaviorHandle>()
-
-function isProfileWarmingStale(profileDir: string): boolean {
-  const status = readVeo3Status(profileDir)
-  if (!status?.warmed || !status.lastWarmedAt) return true
-  return Date.now() - status.lastWarmedAt > WARMING_REFRESH_INTERVAL_MS
 }
 
 ipcMain.handle('veo3-list-profiles', async () => {
@@ -1599,9 +1591,6 @@ ipcMain.handle('veo3-list-profiles', async () => {
       profileDir,
       loggedIn: runtimeReady,
       email: status?.email,
-      warmed: status?.warmed ?? false,
-      lastWarmedAt: status?.lastWarmedAt,
-      stale: isProfileWarmingStale(profileDir),
     }
   })
   return { profiles }
@@ -1789,95 +1778,6 @@ ipcMain.handle('veo3-delete-profile', async (_event, profileId: string) => {
   }
 })
 
-// ─── Profile Warming IPC handlers ────────────────────────────────────────────
-
-ipcMain.handle('veo3-warm-profile', async (_event, profileId: string) => {
-  if (!/^profile-\d{3}$/.test(profileId)) return { success: false, error: 'Profile không hợp lệ.' }
-  if (veo3WarmingInProgress.has(profileId)) return { success: false, error: 'Profile đang được warm.' }
-
-  const entry = veo3Profiles.find(v => v.profileId === profileId && v.ctx)
-  if (!entry?.ctx) return { success: false, error: 'Profile chưa mở. Mở profile trước khi warm.' }
-
-  veo3WarmingInProgress.add(profileId)
-  send('veo3-warming-status', { profileId, status: 'started', current: 0, total: 0 })
-
-  try {
-    const visited = await warmProfile(entry.ctx, (p: WarmingProgress) => {
-      send('veo3-warming-status', { profileId, status: 'progress', ...p })
-    })
-
-    const profileDir = getVeo3ProfileDirById(profileId)
-    writeVeo3Status(profileDir, entry.loggedIn ?? false, undefined, { lastWarmedAt: Date.now(), warmed: true })
-
-    send('veo3-warming-status', { profileId, status: 'done', visited })
-    appLog('info', `Veo3 profile ${profileId} warmed — visited ${visited} sites`, 'main')
-    return { success: true, visited }
-  } catch (err: any) {
-    send('veo3-warming-status', { profileId, status: 'error', error: err?.message })
-    appLog('error', `Veo3 warm profile ${profileId}: ${err?.message}`, 'main')
-    return { success: false, error: err?.message ?? 'Warming thất bại.' }
-  } finally {
-    veo3WarmingInProgress.delete(profileId)
-  }
-})
-
-ipcMain.handle('veo3-warm-all-profiles', async () => {
-  const results: { profileId: string; success: boolean; visited?: number; error?: string }[] = []
-  for (const entry of veo3Profiles) {
-    if (!entry.ctx || veo3WarmingInProgress.has(entry.profileId)) continue
-
-    veo3WarmingInProgress.add(entry.profileId)
-    send('veo3-warming-status', { profileId: entry.profileId, status: 'started', current: 0, total: 0 })
-    try {
-      const visited = await warmProfile(entry.ctx, (p: WarmingProgress) => {
-        send('veo3-warming-status', { profileId: entry.profileId, status: 'progress', ...p })
-      })
-      writeVeo3Status(entry.profileDir, entry.loggedIn ?? false, undefined, { lastWarmedAt: Date.now(), warmed: true })
-      send('veo3-warming-status', { profileId: entry.profileId, status: 'done', visited })
-      results.push({ profileId: entry.profileId, success: true, visited })
-    } catch (err: any) {
-      send('veo3-warming-status', { profileId: entry.profileId, status: 'error', error: err?.message })
-      results.push({ profileId: entry.profileId, success: false, error: err?.message })
-    } finally {
-      veo3WarmingInProgress.delete(entry.profileId)
-    }
-  }
-  return { results }
-})
-
-ipcMain.handle('veo3-get-warming-status', async (_event, profileId: string) => {
-  const profileDir = getVeo3ProfileDirById(profileId)
-  const status = readVeo3Status(profileDir)
-  return {
-    warmed: status?.warmed ?? false,
-    lastWarmedAt: status?.lastWarmedAt,
-    stale: isProfileWarmingStale(profileDir),
-    isWarming: veo3WarmingInProgress.has(profileId),
-  }
-})
-
-ipcMain.handle('veo3-refresh-stale-profiles', async () => {
-  let refreshed = 0
-  for (const entry of veo3Profiles) {
-    if (!entry.ctx) continue
-    if (!isProfileWarmingStale(entry.profileDir)) continue
-    if (veo3WarmingInProgress.has(entry.profileId)) continue
-
-    veo3WarmingInProgress.add(entry.profileId)
-    try {
-      const count = await refreshProfileCookies(entry.ctx)
-      writeVeo3Status(entry.profileDir, entry.loggedIn ?? false, undefined, { lastWarmedAt: Date.now(), warmed: true })
-      appLog('info', `Veo3 profile ${entry.profileId} cookies refreshed — ${count} sites`, 'main')
-      refreshed++
-    } catch (err: any) {
-      appLog('warn', `Veo3 refresh cookies ${entry.profileId}: ${err?.message}`, 'main')
-    } finally {
-      veo3WarmingInProgress.delete(entry.profileId)
-    }
-  }
-  return { refreshed }
-})
-
 /** Run one Veo3 job: uses first *logged-in* profile's Flow page; navigates to project list then runs create-video flow. */
 ipcMain.handle('veo3-run-job', async (_event, payload: {
   projectId?: string
@@ -1886,7 +1786,7 @@ ipcMain.handle('veo3-run-job', async (_event, payload: {
   debugUploadOnly?: boolean
   prompt: string
   imageDir: string
-  aiModel?: 'veo-3.1-fast' | 'veo-3.1-fast-lower-priority' | 'veo-3.1-quality'
+  aiModel?: 'veo-3.1-lite' | 'veo-3.1-fast' | 'veo-3.1-fast-lower-priority' | 'veo-3.1-quality'
   videoMode: 'frames' | 'ingredients'
   landscape: boolean
   multiplier: 1 | 2 | 3 | 4
@@ -2001,7 +1901,7 @@ ipcMain.handle('veo3-run-queue', async (_event, queue: Array<{
   id: string
   name: string
   outputDir: string
-  aiModel?: 'veo-3.1-fast' | 'veo-3.1-fast-lower-priority' | 'veo-3.1-quality'
+  aiModel?: 'veo-3.1-lite' | 'veo-3.1-fast' | 'veo-3.1-fast-lower-priority' | 'veo-3.1-quality'
   jobs: Array<{ id: string; index: number; prompt: string; status: string; scriptIndex?: number; imageIndex?: number }>
   imageDir?: string
   startFramesDir?: string
@@ -2013,8 +1913,8 @@ ipcMain.handle('veo3-run-queue', async (_event, queue: Array<{
   imageDownloadResolution?: '1k' | '2k' | '4k'
   generationMode?: 'video' | 'image'
   imageModel?: string
-}>, queueOptions?: { enableHumanBehavior?: boolean }) => {
-  const enableHumanBehavior = queueOptions?.enableHumanBehavior ?? true
+  batchSize?: number
+}>) => {
   if (veo3QueueRunning) {
     return { success: false, error: 'Veo3 queue đang chạy. Dừng phiên hiện tại trước khi chạy lại.' }
   }
@@ -2137,9 +2037,29 @@ ipcMain.handle('veo3-run-queue', async (_event, queue: Array<{
       }
     }
 
-    for (const job of project.pendingJobs) {
-      send('job-progress', { projectId: project.id, jobId: job.id, progress: 5 })
+    // Split groups into batches to avoid reCAPTCHA 403.
+    // batchSize counts *videos* (prompts × multiplier), not raw prompts.
+    const batchSizeLimit = project.batchSize ?? 0
+    const batchMultiplier = Math.max(1, project.multiplier ?? 2)
+    const groupBatches: (typeof groups)[] = []
+    if (batchSizeLimit > 0) {
+      let currentBatch: typeof groups = []
+      let currentVideoCount = 0
+      for (const g of groups) {
+        const groupVideoCount = g.prompts.length * batchMultiplier
+        if (currentVideoCount > 0 && currentVideoCount + groupVideoCount > batchSizeLimit) {
+          groupBatches.push(currentBatch)
+          currentBatch = []
+          currentVideoCount = 0
+        }
+        currentBatch.push(g)
+        currentVideoCount += groupVideoCount
+      }
+      if (currentBatch.length > 0) groupBatches.push(currentBatch)
+    } else {
+      groupBatches.push(groups)
     }
+
     const networkLog: { type: 'request' | 'response'; url: string; method?: string; status?: number; when: number }[] = []
     const onReq = (req: { url: () => string; method: () => string }) => { networkLog.push({ type: 'request', url: req.url(), method: req.method(), when: Date.now() }) }
     const onRes = (res: { url: () => string; status: () => number }) => { networkLog.push({ type: 'response', url: res.url(), status: res.status(), when: Date.now() }) }
@@ -2149,39 +2069,62 @@ ipcMain.handle('veo3-run-queue', async (_event, queue: Array<{
       projectId: project.id,
       jobId: project.pendingJobs[0]?.id,
     })
+    let completedJobOffset = 0
     try {
-      await entry.page.goto(VEO3_FLOW_URL, { waitUntil: 'domcontentloaded' })
-      for (const job of project.pendingJobs) {
-        send('job-progress', { projectId: project.id, jobId: job.id, progress: 10 })
-      }
-      const expectedCount = project.pendingJobs.length * Math.max(1, project.multiplier ?? 2)
-      const outputDirForProject = path.join(project.outputDir, project.name.replace(/\s+/g, '_').toLowerCase())
-      const savedPaths = await runVeo3ProjectFlowByGroups(entry.page, groups, {
-        logTag: `${entry.profileId}|${project.id.slice(0, 8)}`,
-        shouldStop: () => veo3QueueAbortRequested,
-        aiModel: project.aiModel,
-        videoMode: project.videoMode,
-        landscape: project.landscape,
-        multiplier: project.multiplier,
-        downloadResolution: project.downloadResolution,
-        generationMode: project.generationMode,
-        imageModel: project.imageModel,
-      }, {
-        outputDir: outputDirForProject,
-        expectedCount,
-        downloadResolution: project.downloadResolution,
-        onProgress: (completedCount) => {
-          for (let i = 0; i < completedCount && i < project.pendingJobs.length; i++) {
-            send('job-progress', { projectId: project.id, jobId: project.pendingJobs[i].id, progress: 100 })
-          }
-        },
-      })
-      for (let i = 0; i < project.pendingJobs.length; i++) {
-        send('job-completed', {
-          projectId: project.id,
-          jobId: project.pendingJobs[i].id,
-          outputPath: savedPaths[i] ?? '',
+      for (let batchIdx = 0; batchIdx < groupBatches.length; batchIdx++) {
+        if (veo3QueueAbortRequested) return { success: false, stopped: true }
+
+        const batchGroups = groupBatches[batchIdx]
+        const batchPromptCount = batchGroups.reduce((s, g) => s + g.prompts.length, 0)
+        const batchJobs = project.pendingJobs.slice(completedJobOffset, completedJobOffset + batchPromptCount)
+
+        if (groupBatches.length > 1) {
+          appLog('info', `Veo3 batch ${batchIdx + 1}/${groupBatches.length}: ${batchPromptCount} prompts, ${batchJobs.length} jobs (profile ${entry.profileId})`, 'main')
+        }
+
+        for (const job of batchJobs) {
+          send('job-progress', { projectId: project.id, jobId: job.id, progress: 5 })
+        }
+        await entry.page.goto(VEO3_FLOW_URL, { waitUntil: 'domcontentloaded' })
+        for (const job of batchJobs) {
+          send('job-progress', { projectId: project.id, jobId: job.id, progress: 10 })
+        }
+
+        const batchExpectedCount = batchPromptCount * Math.max(1, project.multiplier ?? 2)
+        const outputDirForProject = path.join(project.outputDir, project.name.replace(/\s+/g, '_').toLowerCase())
+        const savedPaths = await runVeo3ProjectFlowByGroups(entry.page, batchGroups, {
+          logTag: `${entry.profileId}|${project.id.slice(0, 8)}`,
+          shouldStop: () => veo3QueueAbortRequested,
+          aiModel: project.aiModel,
+          videoMode: project.videoMode,
+          landscape: project.landscape,
+          multiplier: project.multiplier,
+          downloadResolution: project.downloadResolution,
+          generationMode: project.generationMode,
+          imageModel: project.imageModel,
+        }, {
+          outputDir: outputDirForProject,
+          expectedCount: batchExpectedCount,
+          downloadResolution: project.downloadResolution,
+          onProgress: (completedCount) => {
+            for (let i = 0; i < completedCount && i < batchJobs.length; i++) {
+              send('job-progress', { projectId: project.id, jobId: batchJobs[i].id, progress: 100 })
+            }
+          },
         })
+
+        for (let i = 0; i < batchJobs.length; i++) {
+          send('job-completed', {
+            projectId: project.id,
+            jobId: batchJobs[i].id,
+            outputPath: savedPaths[i] ?? '',
+          })
+        }
+        completedJobOffset += batchPromptCount
+
+        if (groupBatches.length > 1 && batchIdx < groupBatches.length - 1) {
+          appLog('info', `Veo3 batch ${batchIdx + 1}/${groupBatches.length} done, navigating back to create new Flow project for next batch...`, 'main')
+        }
       }
       return { success: true }
     } catch (err: any) {
@@ -2204,7 +2147,8 @@ ipcMain.handle('veo3-run-queue', async (_event, queue: Array<{
       const logDirErr = getLogDirectory()
       const screenshotPath = await captureVeo3FlowPageScreenshot(entry.page, runDir ?? logDirErr, project.id)
       if (screenshotPath) appLog('info', `Veo3 error screenshot: ${screenshotPath}`, 'veo3')
-      for (const job of project.pendingJobs) {
+      const remainingJobs = project.pendingJobs.slice(completedJobOffset)
+      for (const job of remainingJobs) {
         send('job-failed', {
           projectId: project.id,
           jobId: job.id,
@@ -2230,35 +2174,7 @@ ipcMain.handle('veo3-run-queue', async (_event, queue: Array<{
     }
   }
 
-  // Auto-refresh stale profile cookies before queue starts (only when human behavior enabled)
-  const behaviorHandles: HumanBehaviorHandle[] = []
-  if (enableHumanBehavior) {
-    for (const ent of profiles) {
-      const v = veo3Profiles.find(p => p.profileId === ent.profileId)
-      if (v?.ctx && isProfileWarmingStale(v.profileDir)) {
-        try {
-          appLog('info', `Veo3 auto-refreshing stale cookies for ${ent.profileId} before queue`, 'main')
-          await refreshProfileCookies(v.ctx)
-          writeVeo3Status(v.profileDir, v.loggedIn ?? false, undefined, { lastWarmedAt: Date.now(), warmed: true })
-        } catch (err: any) {
-          appLog('warn', `Veo3 auto-refresh cookies ${ent.profileId}: ${err?.message}`, 'main')
-        }
-      }
-    }
-
-    for (const ent of profiles) {
-      const v = veo3Profiles.find(p => p.profileId === ent.profileId)
-      if (v?.ctx && ent.page) {
-        const flowPage = ent.page
-        const handle = startHumanBehaviorLoop(v.ctx, flowPage, () => isFlowPageBusy(flowPage))
-        behaviorHandles.push(handle)
-        veo3HumanBehaviorHandles.set(ent.profileId, handle)
-      }
-    }
-    appLog('info', `Veo3 human behavior enabled: auto-refresh cookies + random tab simulation`, 'main')
-  }
-
-  appLog('info', `Veo3 queue: ${projectQueue.length} project(s), ${profiles.length} profile(s) — human behavior: ${enableHumanBehavior ? 'ON' : 'OFF'}`, 'main')
+  appLog('info', `Veo3 queue: ${projectQueue.length} project(s), ${profiles.length} profile(s)`, 'main')
   let stoppedByUser = false
   await Promise.all(
     profiles.map(async (ent) => {
@@ -2280,10 +2196,6 @@ ipcMain.handle('veo3-run-queue', async (_event, queue: Array<{
     })
   )
 
-  // Stop all human behavior loops when queue ends
-  for (const handle of behaviorHandles) handle.stop()
-  for (const ent of profiles) veo3HumanBehaviorHandles.delete(ent.profileId)
-
   const totalJobs = projectsWithPending.reduce((s, p) => s + p.pendingJobs.length, 0)
   if (stoppedByUser || veo3QueueAbortRequested) {
     send('session-done', { success: false, summary: { total: totalJobs, success: 0, failed: 0 } })
@@ -2295,9 +2207,6 @@ ipcMain.handle('veo3-run-queue', async (_event, queue: Array<{
   veo3QueueRunning = false
   return { success: true }
   } finally {
-    // Ensure all behavior loops stop even on exception
-    for (const [, handle] of veo3HumanBehaviorHandles) handle.stop()
-    veo3HumanBehaviorHandles.clear()
     veo3QueueRunning = false
   }
 })

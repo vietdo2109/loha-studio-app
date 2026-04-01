@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.2.9] - 2026-04-01
+
+### Added (Veo3)
+
+- **Veo 3.1 - Lite**: model mới trên Google Flow (khớp menu `Veo 3.1 - Lite`).
+- **Giới hạn video mỗi phiên (batch)**: tùy chọn trong modal dự án — sau khi tạo/tải đủ số video trong một phiên, tool mở phiên Flow mới và tiếp tục hàng đợi (giảm tải 403/reCAPTCHA). Ngưỡng tính theo **số video** (số prompt × multiplier), chia theo **group** (ảnh/kịch bản).
+
+### Changed / Removed
+
+- Gỡ automation **profile warming** (`profileWarming.ts`).
+- **Modal profile Veo3**: quản lý profile gọn hơn (mở theo số / theo lựa chọn, xóa profile, cập nhật trạng thái đăng nhập).
+
 ## [1.2.1] - 2026-03-10
 
 ### Fixed (Veo3 / app shell)

@@ -26,7 +26,7 @@ const VEO3_MINIMAL_ACTION_LOG = process.env.VEO3_VERBOSE_LOG !== '1'
 const flowLogTagStore = new AsyncLocalStorage<string>()
 
 export type Veo3VideoMode = 'frames' | 'ingredients'
-export type Veo3AiModel = 'veo-3.1-fast' | 'veo-3.1-fast-lower-priority' | 'veo-3.1-quality'
+export type Veo3AiModel = 'veo-3.1-lite' | 'veo-3.1-fast' | 'veo-3.1-fast-lower-priority' | 'veo-3.1-quality'
 export type Veo3DownloadResolution = '720p' | '1080p' | '4k'
 
 export type Veo3FlowOptions = {
@@ -49,6 +49,7 @@ export type Veo3FlowOptions = {
 }
 
 const AI_MODEL_LABEL: Record<Veo3AiModel, string> = {
+  'veo-3.1-lite': 'Veo 3.1 - Lite',
   'veo-3.1-fast': 'Veo 3.1 - Fast',
   'veo-3.1-fast-lower-priority': 'Veo 3.1 - Fast [Lower Priority]',
   'veo-3.1-quality': 'Veo 3.1 - Quality',

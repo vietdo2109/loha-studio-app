@@ -63,7 +63,6 @@ export default function App() {
   const [isStarting,      setIsStarting]      = useState(false)
   const [sessionSummary,  setSessionSummary]  = useState<{ total: number; success: number; failed: number } | null>(null)
   const [isStartingVeo3,  setIsStartingVeo3]  = useState(false)
-  const [enableHumanBehavior, setEnableHumanBehavior] = useState(true)
   const [showVeo3Modal, setShowVeo3Modal] = useState(false)
   const [showGrokModal, setShowGrokModal] = useState(false)
   const [veo3ProfilesList, setVeo3ProfilesList] = useState<{ profileId: string; profileDir: string; loggedIn: boolean; email?: string }[]>([])
@@ -712,12 +711,12 @@ export default function App() {
     }
     setIsStartingVeo3(true)
     sessionJobFailCountRef.current = 0
-    const res = await api.veo3RunQueue(veo3Queue, { enableHumanBehavior })
+    const res = await api.veo3RunQueue(veo3Queue)
     if (!res?.success) {
       setErrors(prev => [...prev, res?.error ?? 'Chạy queue thất bại.'])
       setIsStartingVeo3(false)
     }
-  }, [veo3Queue, veo3ProfilesList, allowVeo, enableHumanBehavior])
+  }, [veo3Queue, veo3ProfilesList, allowVeo])
 
   const handleVeo3Stop = useCallback(async () => {
     const api = (window as any).electronAPI
@@ -1315,19 +1314,6 @@ export default function App() {
           )}
           {platform === "Veo3" && activePanel === "projects" && (
             <>
-              <label
-                style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11, color: "var(--text2)", cursor: "pointer", userSelect: "none" }}
-                title="Bật giả lập hành vi người dùng thật: tự động refresh cookies, mở tab search ngẫu nhiên trong lúc chạy queue. Tắt nếu gặp lỗi timeout/freeze."
-              >
-                <input
-                  type="checkbox"
-                  checked={enableHumanBehavior}
-                  onChange={(e) => setEnableHumanBehavior(e.target.checked)}
-                  disabled={isStartingVeo3}
-                  style={{ width: 14, height: 14, cursor: "pointer", marginRight: 4, marginLeft: 10 }}
-                />
-                thêm hành vi người dùng thật
-              </label>
               <Btn
                 variant="primary"
                 disabled={pendingVeo3Count === 0 || veo3ProfilesList.filter(p => p.loggedIn).length === 0 || isStartingVeo3}

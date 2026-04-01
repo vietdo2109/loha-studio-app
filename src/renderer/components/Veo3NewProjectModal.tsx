@@ -10,6 +10,7 @@ export function Veo3NewProjectModal({ onClose, onSave, initial, scripts = [] }: 
   scripts?: Script[]
 }) {
   const MODEL_OPTIONS: Array<{ value: Veo3AiModel; label: string }> = [
+    { value: 'veo-3.1-lite', label: 'Veo 3.1 - Lite' },
     { value: 'veo-3.1-fast', label: 'Veo 3.1 - Fast' },
     { value: 'veo-3.1-fast-lower-priority', label: 'Veo 3.1 - Fast [Lower Priority]' },
     { value: 'veo-3.1-quality', label: 'Veo 3.1 - Quality' },
@@ -35,6 +36,7 @@ export function Veo3NewProjectModal({ onClose, onSave, initial, scripts = [] }: 
   const [startFramesDir, setStartFramesDir] = useState(initial?.startFramesDir ?? initial?.imageDir ?? "")
   const [useScripts, setUseScripts] = useState(!!(initial?.useScripts && initial?.scriptIds?.length))
   const [selectedScriptId, setSelectedScriptId] = useState(initial?.scriptIds?.[0] ?? '')
+  const [batchSize, setBatchSize] = useState<number>(initial?.batchSize ?? 20)
 
   useEffect(() => {
     if (initial) {
@@ -50,6 +52,7 @@ export function Veo3NewProjectModal({ onClose, onSave, initial, scripts = [] }: 
       setStartFramesDir(initial.startFramesDir ?? initial.imageDir ?? "")
       setUseScripts(!!(initial.useScripts && initial.scriptIds?.length))
       setSelectedScriptId(initial.scriptIds?.[0] ?? '')
+      setBatchSize(initial.batchSize ?? 20)
       if (!initial.useScripts) setPromptText(initial.prompts.join("\n\n"))
     }
   }, [initial?.id])
@@ -97,6 +100,7 @@ export function Veo3NewProjectModal({ onClose, onSave, initial, scripts = [] }: 
         useScripts: true,
         scriptIds: [selectedScriptId],
       }),
+      batchSize: batchSize > 0 ? batchSize : undefined,
     }
     if (isEdit && initial) {
       onSave({ ...initial, ...payload })
@@ -317,6 +321,26 @@ export function Veo3NewProjectModal({ onClose, onSave, initial, scripts = [] }: 
           </div>
         </div>
       </div>
+
+      <ModalRow>
+        <ModalLabel>Số video tối đa mỗi phiên tạo (batch)</ModalLabel>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <Input
+            value={String(batchSize)}
+            onChange={(v) => {
+              const n = parseInt(v, 10)
+              setBatchSize(Number.isFinite(n) && n >= 0 ? n : 0)
+            }}
+            placeholder="0 = không giới hạn"
+            style={{ width: 100 }}
+          />
+          <span style={{ fontSize: 11, color: "var(--text3)" }}>
+            {batchSize > 0
+              ? `Tạo ${batchSize} video → tải về → tạo dự án mới trên Flow → tiếp tục (tránh lỗi 403)`
+              : "Không giới hạn (tạo tất cả trong 1 phiên)"}
+          </span>
+        </div>
+      </ModalRow>
 
       <ModalRow>
         <ModalLabel>

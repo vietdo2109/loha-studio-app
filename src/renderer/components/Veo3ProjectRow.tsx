@@ -8,6 +8,7 @@ const MODE_LABEL: Record<Veo3VideoMode, string> = {
 }
 
 function modelLabel(model: string): string {
+  if (model === 'veo-3.1-lite') return '3.1 Lite'
   if (model === 'veo-3.1-fast-lower-priority') return '3.1 Fast LP'
   if (model === 'veo-3.1-quality') return '3.1 Quality'
   return '3.1 Fast'

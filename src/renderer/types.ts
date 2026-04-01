@@ -70,7 +70,7 @@ export type Veo3VideoMode = 'frames' | 'ingredients'
 /** Video = tạo video. Image = tạo hình ảnh (Hình ảnh tab trong Flow). */
 export type Veo3GenerationMode = 'video' | 'image'
 export type Veo3Multiplier = 1 | 2 | 3 | 4
-export type Veo3AiModel = 'veo-3.1-fast' | 'veo-3.1-fast-lower-priority' | 'veo-3.1-quality'
+export type Veo3AiModel = 'veo-3.1-lite' | 'veo-3.1-fast' | 'veo-3.1-fast-lower-priority' | 'veo-3.1-quality'
 /** Image mode models (Hình ảnh tab). */
 export type Veo3ImageModel = 'Nano Banana Pro' | 'Nano Banana 2' | 'Imagen 4'
 /** 720p = tải ngay (không upscale). 1080p/4k = upscale rồi tải. */
@@ -105,6 +105,8 @@ export interface Veo3Project {
   /** When true, prompts are built from selected scripts; 1 image per script (1.png, 2.png, ...). */
   useScripts?: boolean
   scriptIds?:  string[]
+  /** Max video submissions per Flow project session. 0 or undefined = no limit. Splits into multiple batches to avoid reCAPTCHA 403. */
+  batchSize?: number
 }
 
 export interface Veo3QueueJob {
