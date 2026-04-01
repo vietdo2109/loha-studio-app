@@ -1315,7 +1315,7 @@ export default function App() {
           )}
           {platform === "Veo3" && activePanel === "projects" && (
             <>
-              {/* <label
+              <label
                 style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11, color: "var(--text2)", cursor: "pointer", userSelect: "none" }}
                 title="Bật giả lập hành vi người dùng thật: tự động refresh cookies, mở tab search ngẫu nhiên trong lúc chạy queue. Tắt nếu gặp lỗi timeout/freeze."
               >
@@ -1327,7 +1327,7 @@ export default function App() {
                   style={{ width: 14, height: 14, cursor: "pointer", marginRight: 4, marginLeft: 10 }}
                 />
                 thêm hành vi người dùng thật
-              </label> */}
+              </label>
               <Btn
                 variant="primary"
                 disabled={pendingVeo3Count === 0 || veo3ProfilesList.filter(p => p.loggedIn).length === 0 || isStartingVeo3}
